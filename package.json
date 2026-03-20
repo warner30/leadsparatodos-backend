@@ -14,7 +14,9 @@
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.11.3",
     "helmet": "^7.1.0",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0", 
+    "mercadopago": "^2.0.15"
+
   },
   "engines": {
     "node": "18.x"
