@@ -15,7 +15,7 @@
     "pg": "^8.11.3",
     "helmet": "^7.1.0",
     "morgan": "^1.10.0", 
-    "mercadopago": "^2.0.15"
+    "mercadopago": "1.5.15"
 
   },
   "engines": {
