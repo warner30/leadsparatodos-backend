@@ -10,11 +10,15 @@ const jwt = require('jsonwebtoken');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Database connection
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+// Database configuration
+const dbConfig = {
+  connectionString: process.env.DATABASE_URL || process.env.DATABASE_PRIVATE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+};
+
+const pool = new Pool(dbConfig);
 
 // Test database connection
 pool.connect((err, client, release) => {
