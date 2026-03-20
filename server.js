@@ -148,6 +148,89 @@ const PACKAGES = {
   empresarial: { id: 'empresarial', name: '50.000 Créditos', credits: 50000, price: 5500, discount: 21 }
 };
 
+// NOVO: Processar pagamento com cartão (Checkout Transparente/Bricks)
+app.post('/api/payment/process-card', authMiddleware, async (req, res) => {
+  try {
+    const { package_id, payment_data } = req.body;
+
+    console.log('💳 Recebendo pagamento:', package_id, payment_data);
+
+    const pkg = PACKAGES[package_id];
+    if (!pkg) {
+      return res.status(400).json({ error: 'Pacote inválido' });
+    }
+
+    const userResult = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [req.userId]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    const user = userResult.rows[0];
+    const external_reference = `LP-${user.id}-${Date.now()}`;
+
+    await pool.query(
+      'INSERT INTO transactions (user_id, external_reference, status, package_id, credits, amount) VALUES ($1, $2, $3, $4, $5, $6)',
+      [user.id, external_reference, 'pending', package_id, pkg.credits, pkg.price]
+    );
+
+    const payment = {
+      transaction_amount: pkg.price,
+      token: payment_data.token,
+      description: `${pkg.name} - Leads para Todos`,
+      installments: payment_data.installments,
+      payment_method_id: payment_data.payment_method_id,
+      issuer_id: payment_data.issuer_id,
+      payer: {
+        email: payment_data.payer.email,
+        identification: {
+          type: payment_data.payer.identification.type,
+          number: payment_data.payer.identification.number
+        }
+      },
+      external_reference: external_reference,
+      notification_url: `https://leadsparatodos-backend-production.up.railway.app/api/payment/webhook`
+    };
+
+    console.log('🔧 Criando pagamento no Mercado Pago:', payment);
+
+    const paymentResponse = await mercadopago.payment.create(payment);
+    const paymentData = paymentResponse.body;
+
+    console.log('✅ Pagamento criado:', paymentData.id, paymentData.status);
+
+    if (paymentData.status === 'approved') {
+      await pool.query('UPDATE users SET credits_balance = credits_balance + $1 WHERE id = $2', [pkg.credits, user.id]);
+      await pool.query(
+        `UPDATE transactions SET status = $1, payment_id = $2, payment_method = $3, approved_at = NOW(), updated_at = NOW() WHERE external_reference = $4`,
+        ['approved', paymentData.id, paymentData.payment_method_id, external_reference]
+      );
+      console.log(`✅ Créditos adicionados: ${pkg.credits} para usuário ${user.id}`);
+    } else {
+      await pool.query(
+        `UPDATE transactions SET status = $1, payment_id = $2, updated_at = NOW() WHERE external_reference = $3`,
+        [paymentData.status, paymentData.id, external_reference]
+      );
+    }
+
+    res.json({
+      status: paymentData.status,
+      status_detail: paymentData.status_detail,
+      payment_id: paymentData.id,
+      external_reference: external_reference,
+      message: paymentData.status === 'approved' ? 'Pagamento aprovado!' : 'Pagamento processado'
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao processar pagamento:', error);
+    res.status(500).json({
+      error: 'Erro ao processar pagamento',
+      details: error.message,
+      response: error.response?.body || null
+    });
+  }
+});
+
+// Checkout Pro (mantido para compatibilidade)
 app.post('/api/payment/create-preference', authMiddleware, async (req, res) => {
   try {
     const { package_id } = req.body;
@@ -188,14 +271,9 @@ app.post('/api/payment/create-preference', authMiddleware, async (req, res) => {
       expires: false,
       binary_mode: false
     };
-    console.log('🔧 Criando preferência:', preference);
     const response = await mercadopago.preferences.create(preference);
-    await pool.query(
-      'UPDATE transactions SET preference_id = $1 WHERE external_reference = $2',
-      [response.body.id, external_reference]
-    );
+    await pool.query('UPDATE transactions SET preference_id = $1 WHERE external_reference = $2', [response.body.id, external_reference]);
     console.log('✅ Preferência criada:', response.body.id);
-    console.log('🔗 Init point:', response.body.init_point);
     res.json({
       preference_id: response.body.id,
       init_point: response.body.init_point,
@@ -204,11 +282,7 @@ app.post('/api/payment/create-preference', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Erro ao criar preferência:', error);
-    res.status(500).json({
-      error: 'Erro ao criar pagamento',
-      details: error.message,
-      response: error.response?.body || null
-    });
+    res.status(500).json({ error: 'Erro ao criar pagamento', details: error.message, response: error.response?.body || null });
   }
 });
 
