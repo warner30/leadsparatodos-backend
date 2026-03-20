@@ -10,15 +10,17 @@ const jwt = require('jsonwebtoken');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Database configuration
-const dbConfig = {
-  connectionString: process.env.DATABASE_URL || process.env.DATABASE_PRIVATE_URL,
+// Database configuration - usando variáveis individuais
+const pool = new Pool({
+  host: process.env.PGHOST || 'postgres.railway.internal',
+  port: process.env.PGPORT || 5432,
+  database: process.env.PGDATABASE || 'railway',
+  user: process.env.PGUSER || 'postgres',
+  password: process.env.PGPASSWORD,
   ssl: {
     rejectUnauthorized: false
   }
-};
-
-const pool = new Pool(dbConfig);
+});
 
 // Test database connection
 pool.connect((err, client, release) => {
@@ -26,6 +28,8 @@ pool.connect((err, client, release) => {
     console.error('❌ Erro ao conectar ao PostgreSQL:', err.stack);
   } else {
     console.log('✅ Conectado ao PostgreSQL');
+    console.log(`📍 Host: ${process.env.PGHOST}`);
+    console.log(`📍 Database: ${process.env.PGDATABASE}`);
     release();
   }
 });
