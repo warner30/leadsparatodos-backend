@@ -230,6 +230,148 @@ app.post('/api/payment/process-card', authMiddleware, async (req, res) => {
   }
 });
 
+// NOVO: Processar pagamento com Pix
+app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
+  try {
+    const { package_id } = req.body;
+
+    console.log('💰 Recebendo pagamento Pix:', package_id);
+
+    const pkg = PACKAGES[package_id];
+    if (!pkg) {
+      return res.status(400).json({ error: 'Pacote inválido' });
+    }
+
+    const userResult = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [req.userId]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    const user = userResult.rows[0];
+    const external_reference = `LP-PIX-${user.id}-${Date.now()}`;
+
+    await pool.query(
+      'INSERT INTO transactions (user_id, external_reference, status, package_id, credits, amount) VALUES ($1, $2, $3, $4, $5, $6)',
+      [user.id, external_reference, 'pending', package_id, pkg.credits, pkg.price]
+    );
+
+    const payment = {
+      transaction_amount: pkg.price,
+      description: `${pkg.name} - Leads para Todos`,
+      payment_method_id: 'pix',
+      payer: {
+        email: user.email,
+        first_name: user.name.split(' ')[0],
+        last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0]
+      },
+      external_reference: external_reference,
+      notification_url: `https://leadsparatodos-backend-production.up.railway.app/api/payment/webhook`
+    };
+
+    console.log('🔧 Criando pagamento Pix no Mercado Pago:', payment);
+
+    const paymentResponse = await mercadopago.payment.create(payment);
+    const paymentData = paymentResponse.body;
+
+    console.log('✅ Pagamento Pix criado:', paymentData.id, paymentData.status);
+
+    await pool.query(
+      `UPDATE transactions SET payment_id = $1, status = $2, updated_at = NOW() WHERE external_reference = $3`,
+      [paymentData.id, paymentData.status, external_reference]
+    );
+
+    res.json({
+      payment_id: paymentData.id,
+      status: paymentData.status,
+      external_reference: external_reference,
+      qr_code: paymentData.point_of_interaction.transaction_data.qr_code,
+      qr_code_base64: paymentData.point_of_interaction.transaction_data.qr_code_base64,
+      ticket_url: paymentData.point_of_interaction.transaction_data.ticket_url
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao processar Pix:', error);
+    res.status(500).json({
+      error: 'Erro ao processar pagamento Pix',
+      details: error.message,
+      response: error.response?.body || null
+    });
+  }
+});
+
+// NOVO: Processar pagamento com Boleto
+app.post('/api/payment/process-boleto', authMiddleware, async (req, res) => {
+  try {
+    const { package_id } = req.body;
+
+    console.log('📄 Recebendo pagamento Boleto:', package_id);
+
+    const pkg = PACKAGES[package_id];
+    if (!pkg) {
+      return res.status(400).json({ error: 'Pacote inválido' });
+    }
+
+    const userResult = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [req.userId]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    const user = userResult.rows[0];
+    const external_reference = `LP-BOLETO-${user.id}-${Date.now()}`;
+
+    await pool.query(
+      'INSERT INTO transactions (user_id, external_reference, status, package_id, credits, amount) VALUES ($1, $2, $3, $4, $5, $6)',
+      [user.id, external_reference, 'pending', package_id, pkg.credits, pkg.price]
+    );
+
+    // Data de vencimento: 3 dias úteis
+    const expirationDate = new Date();
+    expirationDate.setDate(expirationDate.getDate() + 3);
+
+    const payment = {
+      transaction_amount: pkg.price,
+      description: `${pkg.name} - Leads para Todos`,
+      payment_method_id: 'bolbradesco',
+      payer: {
+        email: user.email,
+        first_name: user.name.split(' ')[0],
+        last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0]
+      },
+      external_reference: external_reference,
+      notification_url: `https://leadsparatodos-backend-production.up.railway.app/api/payment/webhook`,
+      date_of_expiration: expirationDate.toISOString()
+    };
+
+    console.log('🔧 Criando boleto no Mercado Pago:', payment);
+
+    const paymentResponse = await mercadopago.payment.create(payment);
+    const paymentData = paymentResponse.body;
+
+    console.log('✅ Boleto criado:', paymentData.id, paymentData.status);
+
+    await pool.query(
+      `UPDATE transactions SET payment_id = $1, status = $2, updated_at = NOW() WHERE external_reference = $3`,
+      [paymentData.id, paymentData.status, external_reference]
+    );
+
+    res.json({
+      payment_id: paymentData.id,
+      status: paymentData.status,
+      external_reference: external_reference,
+      external_resource_url: paymentData.transaction_details.external_resource_url,
+      date_of_expiration: paymentData.date_of_expiration
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao processar Boleto:', error);
+    res.status(500).json({
+      error: 'Erro ao processar boleto',
+      details: error.message,
+      response: error.response?.body || null
+    });
+  }
+});
+
 // Checkout Pro (mantido para compatibilidade)
 app.post('/api/payment/create-preference', authMiddleware, async (req, res) => {
   try {
