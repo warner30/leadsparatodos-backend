@@ -86,6 +86,8 @@ async function sendEmail({ to, subject, html }) {
 
 // Templates de email
 function getEmailTemplate(type, data) {
+  const frontendUrl = process.env.FRONTEND_URL || 'https://jkvzqvlk.gensparkspace.com';
+  
   const baseStyle = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9fafb;">
       <div style="background-color: white; border-radius: 8px; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
@@ -95,7 +97,7 @@ function getEmailTemplate(type, data) {
       </div>
       <div style="text-align: center; margin-top: 20px; color: #6b7280; font-size: 14px;">
         <p>Leads para Todos - Geração de Leads do Instagram</p>
-        <p><a href="${process.env.FRONTEND_URL}" style="color: #7c3aed;">Acessar Plataforma</a></p>
+        <p><a href="${frontendUrl}" style="color: #7c3aed;">Acessar Plataforma</a></p>
       </div>
     </div>
   `;
@@ -105,21 +107,21 @@ function getEmailTemplate(type, data) {
       ${baseStyle}
       <h1 style="color: #7c3aed; margin-bottom: 20px;">🎉 Bem-vindo ao Leads para Todos!</h1>
       <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Olá <strong>${data.name}</strong>,
+        Olá <strong>${data.name || 'Cliente'}</strong>,
       </p>
       <p style="font-size: 16px; color: #374151; line-height: 1.6;">
         Sua conta foi criada com sucesso! Agora você pode acessar nossa plataforma e começar a gerar leads qualificados do Instagram.
       </p>
       <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
         <h3 style="color: #7c3aed; margin-top: 0;">📊 Seus Dados:</h3>
-        <p style="margin: 5px 0;"><strong>Email:</strong> ${data.email}</p>
+        <p style="margin: 5px 0;"><strong>Email:</strong> ${data.email || ''}</p>
         <p style="margin: 5px 0;"><strong>Créditos iniciais:</strong> 0</p>
       </div>
       <p style="font-size: 16px; color: #374151; line-height: 1.6;">
         Para começar a usar, compre créditos e explore nossas 758 categorias de leads!
       </p>
       <div style="text-align: center; margin: 30px 0;">
-        <a href="${process.env.FRONTEND_URL}/dashboard.html" 
+        <a href="${frontendUrl}/dashboard.html" 
            style="background-color: #7c3aed; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">
           Acessar Dashboard
         </a>
@@ -131,23 +133,23 @@ function getEmailTemplate(type, data) {
       ${baseStyle}
       <h1 style="color: #10b981; margin-bottom: 20px;">✅ Pagamento Aprovado!</h1>
       <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Olá <strong>${data.name}</strong>,
+        Olá <strong>${data.name || 'Cliente'}</strong>,
       </p>
       <p style="font-size: 16px; color: #374151; line-height: 1.6;">
         Seu pagamento foi aprovado e seus créditos já foram adicionados à sua conta!
       </p>
       <div style="background-color: #d1fae5; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
         <h3 style="color: #065f46; margin-top: 0;">💰 Detalhes da Compra:</h3>
-        <p style="margin: 5px 0;"><strong>Pacote:</strong> ${data.package}</p>
-        <p style="margin: 5px 0;"><strong>Créditos:</strong> ${data.credits.toLocaleString('pt-BR')}</p>
-        <p style="margin: 5px 0;"><strong>Valor:</strong> R$ ${data.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
-        <p style="margin: 5px 0;"><strong>ID da transação:</strong> ${data.transaction_id}</p>
+        <p style="margin: 5px 0;"><strong>Pacote:</strong> ${data.package || 'Créditos'}</p>
+        <p style="margin: 5px 0;"><strong>Créditos:</strong> ${(data.credits || 0).toLocaleString('pt-BR')}</p>
+        <p style="margin: 5px 0;"><strong>Valor:</strong> R$ ${(data.amount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+        <p style="margin: 5px 0;"><strong>ID da transação:</strong> ${data.transaction_id || ''}</p>
       </div>
       <p style="font-size: 16px; color: #374151; line-height: 1.6;">
         Agora você pode começar a exportar leads qualificados do Instagram!
       </p>
       <div style="text-align: center; margin: 30px 0;">
-        <a href="${process.env.FRONTEND_URL}/dashboard.html" 
+        <a href="${frontendUrl}/dashboard.html" 
            style="background-color: #7c3aed; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">
           Usar Meus Créditos
         </a>
@@ -159,7 +161,7 @@ function getEmailTemplate(type, data) {
       ${baseStyle}
       <h1 style="color: #7c3aed; margin-bottom: 20px;">🔐 Recuperação de Senha</h1>
       <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Olá <strong>${data.name}</strong>,
+        Olá <strong>${data.name || 'Cliente'}</strong>,
       </p>
       <p style="font-size: 16px; color: #374151; line-height: 1.6;">
         Recebemos uma solicitação para redefinir a senha da sua conta.
@@ -168,7 +170,7 @@ function getEmailTemplate(type, data) {
         Clique no botão abaixo para criar uma nova senha:
       </p>
       <div style="text-align: center; margin: 30px 0;">
-        <a href="${process.env.FRONTEND_URL}/reset-password.html?token=${data.token}" 
+        <a href="${frontendUrl}/reset-password.html?token=${data.token || ''}" 
            style="background-color: #7c3aed; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">
           Redefinir Senha
         </a>
@@ -789,58 +791,23 @@ app.get('/api/payment/transactions', authMiddleware, async (req, res) => {
 // Dashboard do Admin - Estatísticas gerais
 app.get('/api/admin/dashboard', adminMiddleware, async (req, res) => {
   try {
-    // Total de usuários
     const usersCount = await pool.query('SELECT COUNT(*) as count FROM users');
-    
-    // Total de transações
     const transactionsCount = await pool.query('SELECT COUNT(*) as count FROM transactions');
-    
-    // Total de vendas (aprovadas)
-    const totalSales = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0) as total 
-      FROM transactions 
-      WHERE status = 'approved'
-    `);
-    
-    // Créditos vendidos
-    const creditsCount = await pool.query(`
-      SELECT COALESCE(SUM(credits), 0) as total 
-      FROM transactions 
-      WHERE status = 'approved'
-    `);
-    
-    // Vendas dos últimos 7 dias
+    const totalSales = await pool.query(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE status = 'approved'`);
+    const creditsCount = await pool.query(`SELECT COALESCE(SUM(credits), 0) as total FROM transactions WHERE status = 'approved'`);
     const salesByDay = await pool.query(`
-      SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as count,
-        SUM(amount) as total
+      SELECT DATE(created_at) as date, COUNT(*) as count, SUM(amount) as total
       FROM transactions
       WHERE status = 'approved' AND created_at >= NOW() - INTERVAL '7 days'
       GROUP BY DATE(created_at)
       ORDER BY date DESC
     `);
-    
-    // Transações pendentes
-    const pendingTransactions = await pool.query(`
-      SELECT COUNT(*) as count 
-      FROM transactions 
-      WHERE status = 'pending'
-    `);
+    const pendingTransactions = await pool.query(`SELECT COUNT(*) as count FROM transactions WHERE status = 'pending'`);
 
     res.json({
-      users: {
-        total: parseInt(usersCount.rows[0].count),
-        active: parseInt(usersCount.rows[0].count)
-      },
-      transactions: {
-        total: parseInt(transactionsCount.rows[0].count),
-        pending: parseInt(pendingTransactions.rows[0].count)
-      },
-      sales: {
-        total: parseFloat(totalSales.rows[0].total),
-        credits: parseInt(creditsCount.rows[0].total)
-      },
+      users: { total: parseInt(usersCount.rows[0].count), active: parseInt(usersCount.rows[0].count) },
+      transactions: { total: parseInt(transactionsCount.rows[0].count), pending: parseInt(pendingTransactions.rows[0].count) },
+      sales: { total: parseFloat(totalSales.rows[0].total), credits: parseInt(creditsCount.rows[0].total) },
       salesByDay: salesByDay.rows
     });
   } catch (error) {
@@ -849,67 +816,38 @@ app.get('/api/admin/dashboard', adminMiddleware, async (req, res) => {
   }
 });
 
-// Listar todos os usuários
 app.get('/api/admin/users', adminMiddleware, async (req, res) => {
   try {
     const { page = 1, limit = 20, search = '' } = req.query;
     const offset = (page - 1) * limit;
-    
-    let query = `
-      SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login
-      FROM users
-      WHERE 1=1
-    `;
-    
+    let query = `SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login FROM users WHERE 1=1`;
     const params = [];
-    
     if (search) {
       query += ` AND (name ILIKE $1 OR email ILIKE $1)`;
       params.push(`%${search}%`);
     }
-    
     query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
-    
     const result = await pool.query(query, params);
-    
-    // Total de usuários
-    const countQuery = search 
-      ? `SELECT COUNT(*) FROM users WHERE name ILIKE $1 OR email ILIKE $1`
-      : `SELECT COUNT(*) FROM users`;
+    const countQuery = search ? `SELECT COUNT(*) FROM users WHERE name ILIKE $1 OR email ILIKE $1` : `SELECT COUNT(*) FROM users`;
     const countParams = search ? [`%${search}%`] : [];
     const countResult = await pool.query(countQuery, countParams);
-    
-    res.json({
-      users: result.rows,
-      total: parseInt(countResult.rows[0].count),
-      page: parseInt(page),
-      limit: parseInt(limit)
-    });
+    res.json({ users: result.rows, total: parseInt(countResult.rows[0].count), page: parseInt(page), limit: parseInt(limit) });
   } catch (error) {
     console.error('❌ Erro ao listar usuários:', error);
     res.status(500).json({ error: 'Erro ao listar usuários', details: error.message });
   }
 });
 
-// Editar usuário
 app.put('/api/admin/users/:id', adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { credits_balance, role, status } = req.body;
-    
     const result = await pool.query(
-      `UPDATE users 
-       SET credits_balance = $1, role = $2, status = $3, updated_at = NOW()
-       WHERE id = $4
-       RETURNING id, name, email, credits_balance, role, status`,
+      `UPDATE users SET credits_balance = $1, role = $2, status = $3, updated_at = NOW() WHERE id = $4 RETURNING id, name, email, credits_balance, role, status`,
       [credits_balance, role, status, id]
     );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Usuário não encontrado' });
-    }
-    
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado' });
     res.json({ user: result.rows[0], message: 'Usuário atualizado com sucesso!' });
   } catch (error) {
     console.error('❌ Erro ao editar usuário:', error);
@@ -917,132 +855,63 @@ app.put('/api/admin/users/:id', adminMiddleware, async (req, res) => {
   }
 });
 
-// Detalhes de um usuário
 app.get('/api/admin/users/:id', adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    
-    const userResult = await pool.query(
-      `SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login
-       FROM users WHERE id = $1`,
-      [id]
-    );
-    
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Usuário não encontrado' });
-    }
-    
-    const transactionsResult = await pool.query(
-      `SELECT id, external_reference, status, package_id, credits, amount, payment_method, created_at, approved_at
-       FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`,
-      [id]
-    );
-    
-    res.json({
-      user: userResult.rows[0],
-      transactions: transactionsResult.rows
-    });
+    const userResult = await pool.query(`SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login FROM users WHERE id = $1`, [id]);
+    if (userResult.rows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado' });
+    const transactionsResult = await pool.query(`SELECT id, external_reference, status, package_id, credits, amount, payment_method, created_at, approved_at FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`, [id]);
+    res.json({ user: userResult.rows[0], transactions: transactionsResult.rows });
   } catch (error) {
     console.error('❌ Erro ao buscar detalhes do usuário:', error);
     res.status(500).json({ error: 'Erro ao buscar detalhes', details: error.message });
   }
 });
 
-// Listar todas as transações (admin)
 app.get('/api/admin/transactions', adminMiddleware, async (req, res) => {
   try {
     const { page = 1, limit = 50, status = '' } = req.query;
     const offset = (page - 1) * limit;
-    
-    let query = `
-      SELECT 
-        t.id, t.external_reference, t.status, t.package_id, t.credits, t.amount,
-        t.payment_method, t.created_at, t.approved_at,
-        u.name as user_name, u.email as user_email
-      FROM transactions t
-      LEFT JOIN users u ON t.user_id = u.id
-      WHERE 1=1
-    `;
-    
+    let query = `SELECT t.id, t.external_reference, t.status, t.package_id, t.credits, t.amount, t.payment_method, t.created_at, t.approved_at, u.name as user_name, u.email as user_email FROM transactions t LEFT JOIN users u ON t.user_id = u.id WHERE 1=1`;
     const params = [];
-    
     if (status) {
       query += ` AND t.status = $1`;
       params.push(status);
     }
-    
     query += ` ORDER BY t.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
-    
     const result = await pool.query(query, params);
-    
-    // Total de transações
-    const countQuery = status 
-      ? `SELECT COUNT(*) FROM transactions WHERE status = $1`
-      : `SELECT COUNT(*) FROM transactions`;
+    const countQuery = status ? `SELECT COUNT(*) FROM transactions WHERE status = $1` : `SELECT COUNT(*) FROM transactions`;
     const countParams = status ? [status] : [];
     const countResult = await pool.query(countQuery, countParams);
-    
-    res.json({
-      transactions: result.rows,
-      total: parseInt(countResult.rows[0].count),
-      page: parseInt(page),
-      limit: parseInt(limit)
-    });
+    res.json({ transactions: result.rows, total: parseInt(countResult.rows[0].count), page: parseInt(page), limit: parseInt(limit) });
   } catch (error) {
     console.error('❌ Erro ao listar transações:', error);
     res.status(500).json({ error: 'Erro ao listar transações', details: error.message });
   }
 });
 
-// ========================================
-// EXPORTAR RELATÓRIOS (CSV/JSON)
-// ========================================
-
 app.get('/api/admin/export/transactions', adminMiddleware, async (req, res) => {
   try {
     const { format = 'csv', status = '' } = req.query;
-    
-    let query = `
-      SELECT 
-        t.id, t.external_reference, t.status, t.package_id, t.credits, t.amount,
-        t.payment_method, t.payment_type, t.payer_email, 
-        t.created_at, t.approved_at,
-        u.name as user_name, u.email as user_email, u.phone as user_phone
-      FROM transactions t
-      LEFT JOIN users u ON t.user_id = u.id
-      WHERE 1=1
-    `;
-    
+    let query = `SELECT t.id, t.external_reference, t.status, t.package_id, t.credits, t.amount, t.payment_method, t.payment_type, t.payer_email, t.created_at, t.approved_at, u.name as user_name, u.email as user_email, u.phone as user_phone FROM transactions t LEFT JOIN users u ON t.user_id = u.id WHERE 1=1`;
     const params = [];
-    
     if (status) {
       query += ` AND t.status = $1`;
       params.push(status);
     }
-    
     query += ` ORDER BY t.created_at DESC`;
-    
     const result = await pool.query(query, params);
-    
     if (format === 'csv') {
-      // Gerar CSV
       let csv = 'ID,Referência,Status,Pacote,Créditos,Valor (R$),Método,Email Pagador,Nome Cliente,Email Cliente,Telefone,Criado Em,Aprovado Em\n';
-      
       result.rows.forEach(row => {
         csv += `${row.id},"${row.external_reference}","${row.status}","${row.package_id}",${row.credits},${row.amount},"${row.payment_method || ''}","${row.payer_email || ''}","${row.user_name}","${row.user_email}","${row.user_phone || ''}","${row.created_at}","${row.approved_at || ''}"\n`;
       });
-      
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="transacoes-${Date.now()}.csv"`);
       res.send(csv);
     } else {
-      // Retornar JSON
-      res.json({
-        transactions: result.rows,
-        total: result.rows.length,
-        exported_at: new Date().toISOString()
-      });
+      res.json({ transactions: result.rows, total: result.rows.length, exported_at: new Date().toISOString() });
     }
   } catch (error) {
     console.error('❌ Erro ao exportar transações:', error);
@@ -1053,31 +922,17 @@ app.get('/api/admin/export/transactions', adminMiddleware, async (req, res) => {
 app.get('/api/admin/export/users', adminMiddleware, async (req, res) => {
   try {
     const { format = 'csv' } = req.query;
-    
-    const result = await pool.query(`
-      SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login
-      FROM users
-      ORDER BY created_at DESC
-    `);
-    
+    const result = await pool.query(`SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login FROM users ORDER BY created_at DESC`);
     if (format === 'csv') {
-      // Gerar CSV
       let csv = 'ID,Nome,Email,Telefone,Créditos,Role,Status,Criado Em,Último Login\n';
-      
       result.rows.forEach(row => {
         csv += `${row.id},"${row.name}","${row.email}","${row.phone || ''}",${row.credits_balance},"${row.role}","${row.status}","${row.created_at}","${row.last_login || ''}"\n`;
       });
-      
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="usuarios-${Date.now()}.csv"`);
       res.send(csv);
     } else {
-      // Retornar JSON
-      res.json({
-        users: result.rows,
-        total: result.rows.length,
-        exported_at: new Date().toISOString()
-      });
+      res.json({ users: result.rows, total: result.rows.length, exported_at: new Date().toISOString() });
     }
   } catch (error) {
     console.error('❌ Erro ao exportar usuários:', error);
@@ -1085,16 +940,8 @@ app.get('/api/admin/export/users', adminMiddleware, async (req, res) => {
   }
 });
 
-// Rota 404
-app.use((req, res) => {
-  res.status(404).json({ error: 'Rota não encontrada' });
-});
-
-// Error handler
-app.use((err, req, res, next) => {
-  console.error('Erro:', err);
-  res.status(500).json({ error: 'Erro interno do servidor' });
-});
+app.use((req, res) => res.status(404).json({ error: 'Rota não encontrada' }));
+app.use((err, req, res, next) => { console.error('Erro:', err); res.status(500).json({ error: 'Erro interno do servidor' }); });
 
 app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
