@@ -79,6 +79,28 @@ const authMiddleware = async (req, res, next) => {
   }
 };
 
+// Middleware para admin
+const adminMiddleware = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ error: 'Token não fornecido' });
+    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.userId = decoded.id;
+    
+    // Verificar se é admin
+    const result = await pool.query('SELECT role FROM users WHERE id = $1', [decoded.id]);
+    if (result.rows.length === 0 || result.rows[0].role !== 'admin') {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+    
+    next();
+  } catch (error) {
+    res.status(401).json({ error: 'Token inválido' });
+  }
+};
+
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password, phone } = req.body;
@@ -486,6 +508,250 @@ app.get('/api/payment/transactions', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('❌ Erro ao buscar transações:', error);
     res.status(500).json({ error: 'Erro ao buscar transações', details: error.message });
+  }
+});
+
+// ========================================
+// ROTAS DE ADMIN
+// ========================================
+
+// Dashboard do Admin - Estatísticas gerais
+app.get('/api/admin/dashboard', adminMiddleware, async (req, res) => {
+  try {
+    // Total de usuários
+    const usersCount = await pool.query('SELECT COUNT(*) as count FROM users');
+    
+    // Total de transações
+    const transactionsCount = await pool.query('SELECT COUNT(*) as count FROM transactions');
+    
+    // Total de vendas (aprovadas)
+    const totalSales = await pool.query(`
+      SELECT COALESCE(SUM(amount), 0) as total 
+      FROM transactions 
+      WHERE status = 'approved'
+    `);
+    
+    // Créditos vendidos
+    const creditsCount = await pool.query(`
+      SELECT COALESCE(SUM(credits), 0) as total 
+      FROM transactions 
+      WHERE status = 'approved'
+    `);
+    
+    // Vendas dos últimos 7 dias
+    const salesByDay = await pool.query(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as count,
+        SUM(amount) as total
+      FROM transactions
+      WHERE status = 'approved' AND created_at >= NOW() - INTERVAL '7 days'
+      GROUP BY DATE(created_at)
+      ORDER BY date DESC
+    `);
+    
+    // Transações pendentes
+    const pendingTransactions = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM transactions 
+      WHERE status = 'pending'
+    `);
+
+    res.json({
+      users: {
+        total: parseInt(usersCount.rows[0].count),
+        active: parseInt(usersCount.rows[0].count)
+      },
+      transactions: {
+        total: parseInt(transactionsCount.rows[0].count),
+        pending: parseInt(pendingTransactions.rows[0].count)
+      },
+      sales: {
+        total: parseFloat(totalSales.rows[0].total),
+        credits: parseInt(creditsCount.rows[0].total)
+      },
+      salesByDay: salesByDay.rows
+    });
+  } catch (error) {
+    console.error('❌ Erro ao buscar dashboard admin:', error);
+    res.status(500).json({ error: 'Erro ao buscar estatísticas', details: error.message });
+  }
+});
+
+// Listar todos os usuários
+app.get('/api/admin/users', adminMiddleware, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, search = '' } = req.query;
+    const offset = (page - 1) * limit;
+    
+    let query = `
+      SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login
+      FROM users
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    
+    if (search) {
+      query += ` AND (name ILIKE $1 OR email ILIKE $1)`;
+      params.push(`%${search}%`);
+    }
+    
+    query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(limit, offset);
+    
+    const result = await pool.query(query, params);
+    
+    // Total de usuários
+    const countQuery = search 
+      ? `SELECT COUNT(*) FROM users WHERE name ILIKE $1 OR email ILIKE $1`
+      : `SELECT COUNT(*) FROM users`;
+    const countParams = search ? [`%${search}%`] : [];
+    const countResult = await pool.query(countQuery, countParams);
+    
+    res.json({
+      users: result.rows,
+      total: parseInt(countResult.rows[0].count),
+      page: parseInt(page),
+      limit: parseInt(limit)
+    });
+  } catch (error) {
+    console.error('❌ Erro ao listar usuários:', error);
+    res.status(500).json({ error: 'Erro ao listar usuários', details: error.message });
+  }
+});
+
+// Editar usuário (créditos, role, status)
+app.put('/api/admin/users/:id', adminMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { credits_balance, role, status } = req.body;
+    
+    const updates = [];
+    const params = [];
+    let paramIndex = 1;
+    
+    if (credits_balance !== undefined) {
+      updates.push(`credits_balance = $${paramIndex}`);
+      params.push(credits_balance);
+      paramIndex++;
+    }
+    
+    if (role !== undefined) {
+      updates.push(`role = $${paramIndex}`);
+      params.push(role);
+      paramIndex++;
+    }
+    
+    if (status !== undefined) {
+      updates.push(`status = $${paramIndex}`);
+      params.push(status);
+      paramIndex++;
+    }
+    
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'Nenhum campo para atualizar' });
+    }
+    
+    params.push(id);
+    const query = `
+      UPDATE users 
+      SET ${updates.join(', ')}, updated_at = NOW()
+      WHERE id = $${paramIndex}
+      RETURNING id, name, email, credits_balance, role, status
+    `;
+    
+    const result = await pool.query(query, params);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+    
+    res.json({ user: result.rows[0], message: 'Usuário atualizado com sucesso!' });
+  } catch (error) {
+    console.error('❌ Erro ao editar usuário:', error);
+    res.status(500).json({ error: 'Erro ao editar usuário', details: error.message });
+  }
+});
+
+// Listar todas as transações
+app.get('/api/admin/transactions', adminMiddleware, async (req, res) => {
+  try {
+    const { page = 1, limit = 50, status = '' } = req.query;
+    const offset = (page - 1) * limit;
+    
+    let query = `
+      SELECT 
+        t.id, t.external_reference, t.payment_id, t.status, t.package_id, 
+        t.credits, t.amount, t.payment_method, t.created_at, t.approved_at,
+        u.name as user_name, u.email as user_email
+      FROM transactions t
+      LEFT JOIN users u ON t.user_id = u.id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    
+    if (status) {
+      query += ` AND t.status = $1`;
+      params.push(status);
+    }
+    
+    query += ` ORDER BY t.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(limit, offset);
+    
+    const result = await pool.query(query, params);
+    
+    // Total
+    const countQuery = status 
+      ? `SELECT COUNT(*) FROM transactions WHERE status = $1`
+      : `SELECT COUNT(*) FROM transactions`;
+    const countParams = status ? [status] : [];
+    const countResult = await pool.query(countQuery, countParams);
+    
+    res.json({
+      transactions: result.rows,
+      total: parseInt(countResult.rows[0].count),
+      page: parseInt(page),
+      limit: parseInt(limit)
+    });
+  } catch (error) {
+    console.error('❌ Erro ao listar transações:', error);
+    res.status(500).json({ error: 'Erro ao listar transações', details: error.message });
+  }
+});
+
+// Ver detalhes de um usuário específico
+app.get('/api/admin/users/:id', adminMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Dados do usuário
+    const userResult = await pool.query(`
+      SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login
+      FROM users WHERE id = $1
+    `, [id]);
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+    
+    // Transações do usuário
+    const transactionsResult = await pool.query(`
+      SELECT id, external_reference, status, package_id, credits, amount, payment_method, created_at, approved_at
+      FROM transactions
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      LIMIT 20
+    `, [id]);
+    
+    res.json({
+      user: userResult.rows[0],
+      transactions: transactionsResult.rows
+    });
+  } catch (error) {
+    console.error('❌ Erro ao buscar usuário:', error);
+    res.status(500).json({ error: 'Erro ao buscar usuário', details: error.message });
   }
 });
 
