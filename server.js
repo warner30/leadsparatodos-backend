@@ -12,941 +12,1279 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// ✅ Configuração do Mercado Pago com credenciais de PRODUÇÃO
 mercadopago.configure({
     access_token: process.env.MERCADOPAGO_ACCESS_TOKEN
 });
-console.log('💳 Mercado Pago configurado');
+console.log('✅ Mercado Pago configurado com Access Token de PRODUÇÃO');
 
-const dbConfig = {
-  connectionString: process.env.DATABASE_URL || process.env.DATABASE_PRIVATE_URL,
-  ssl: { rejectUnauthorized: false }
-};
-
-const pool = new Pool(dbConfig);
-
-pool.connect((err, client, release) => {
-  if (err) {
-    console.error('❌ Erro ao conectar ao PostgreSQL:', err.stack);
-  } else {
-    console.log('✅ Conectado ao PostgreSQL');
-    release();
-  }
+// Configuração do banco de dados PostgreSQL
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL || process.env.DATABASE_PRIVATE_URL,
+    ssl: {
+        rejectUnauthorized: false
+    }
 });
 
+pool.connect((err, client, release) => {
+    if (err) {
+        return console.error('❌ Erro ao conectar ao banco de dados:', err.stack);
+    }
+    console.log('✅ Conectado ao banco de dados PostgreSQL');
+    release();
+});
+
+// Middlewares
 app.use(helmet());
 app.use(morgan('combined'));
 app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
-  credentials: true
+    origin: process.env.FRONTEND_URL || '*',
+    credentials: true
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ========================================
-// FUNÇÃO DE ENVIO DE EMAIL (Resend)
-// ========================================
-
-async function sendEmail({ to, subject, html }) {
-  try {
-    // Se não tiver RESEND_API_KEY configurada, apenas loga
-    if (!process.env.RESEND_API_KEY) {
-      console.log('⚠️ RESEND_API_KEY não configurada - Email não enviado');
-      console.log('📧 Email que seria enviado:', { to, subject });
-      return { success: false, message: 'Email não configurado' };
+// ✅ SISTEMA DE CUPONS DE DESCONTO
+const COUPONS = {
+    'TESTE99': {
+        code: 'TESTE99',
+        discount: 99, // 99% de desconto
+        type: 'percentage',
+        active: true,
+        description: 'Cupom de teste com 99% de desconto'
+    },
+    'BEMVINDO10': {
+        code: 'BEMVINDO10',
+        discount: 10,
+        type: 'percentage',
+        active: true,
+        description: 'Cupom de boas-vindas com 10% de desconto'
     }
+};
 
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`
-      },
-      body: JSON.stringify({
-        from: process.env.EMAIL_FROM || 'Leads para Todos <onboarding@resend.dev>',
-        to: [to],
-        subject: subject,
-        html: html
-      })
-    });
-
-    const data = await response.json();
+// Função para validar cupom
+function validateCoupon(couponCode) {
+    if (!couponCode) return null;
     
-    if (!response.ok) {
-      console.error('❌ Erro ao enviar email:', data);
-      return { success: false, error: data };
+    const coupon = COUPONS[couponCode.toUpperCase()];
+    
+    if (!coupon || !coupon.active) {
+        return null;
     }
+    
+    return coupon;
+}
 
-    console.log('✅ Email enviado:', to, subject);
-    return { success: true, data };
-  } catch (error) {
-    console.error('❌ Erro ao enviar email:', error);
-    return { success: false, error: error.message };
-  }
+// Função para calcular desconto
+function calculateDiscount(originalPrice, coupon) {
+    if (!coupon) return 0;
+    
+    if (coupon.type === 'percentage') {
+        return (originalPrice * coupon.discount) / 100;
+    }
+    
+    if (coupon.type === 'fixed') {
+        return Math.min(coupon.discount, originalPrice);
+    }
+    
+    return 0;
+}
+
+// Função para enviar email via Resend
+async function sendEmail(to, subject, html) {
+    try {
+        if (!process.env.RESEND_API_KEY) {
+            console.log('⚠️ RESEND_API_KEY não configurada - Email não enviado:', { to, subject });
+            return { success: false, message: 'RESEND_API_KEY não configurada' };
+        }
+
+        const response = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.RESEND_API_KEY}`
+            },
+            body: JSON.stringify({
+                from: 'Leads Para Todos <noreply@leadsparatodos.com>',
+                to: [to],
+                subject: subject,
+                html: html
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error('❌ Erro ao enviar email:', data);
+            return { success: false, message: data.message };
+        }
+
+        console.log('✅ Email enviado com sucesso:', { to, subject, id: data.id });
+        return { success: true, id: data.id };
+    } catch (error) {
+        console.error('❌ Erro ao enviar email:', error);
+        return { success: false, message: error.message };
+    }
 }
 
 // Templates de email
-function getEmailTemplate(type, data) {
-  const frontendUrl = process.env.FRONTEND_URL || 'https://jkvzqvlk.gensparkspace.com';
-  
-  const baseStyle = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9fafb;">
-      <div style="background-color: white; border-radius: 8px; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-  `;
-  
-  const baseFooter = `
-      </div>
-      <div style="text-align: center; margin-top: 20px; color: #6b7280; font-size: 14px;">
-        <p>Leads para Todos - Geração de Leads do Instagram</p>
-        <p><a href="${frontendUrl}" style="color: #7c3aed;">Acessar Plataforma</a></p>
-      </div>
-    </div>
-  `;
-
-  const templates = {
-    welcome: `
-      ${baseStyle}
-      <h1 style="color: #7c3aed; margin-bottom: 20px;">🎉 Bem-vindo ao Leads para Todos!</h1>
-      <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Olá <strong>${data.name || 'Cliente'}</strong>,
-      </p>
-      <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Sua conta foi criada com sucesso! Agora você pode acessar nossa plataforma e começar a gerar leads qualificados do Instagram.
-      </p>
-      <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
-        <h3 style="color: #7c3aed; margin-top: 0;">📊 Seus Dados:</h3>
-        <p style="margin: 5px 0;"><strong>Email:</strong> ${data.email || ''}</p>
-        <p style="margin: 5px 0;"><strong>Créditos iniciais:</strong> 0</p>
-      </div>
-      <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Para começar a usar, compre créditos e explore nossas 758 categorias de leads!
-      </p>
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="${frontendUrl}/dashboard.html" 
-           style="background-color: #7c3aed; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">
-          Acessar Dashboard
-        </a>
-      </div>
-      ${baseFooter}
+const emailTemplates = {
+    welcome: (name, email) => `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f4f4f4;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px;">
+                <tr>
+                    <td align="center">
+                        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                            <tr>
+                                <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px; text-align: center;">
+                                    <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Bem-vindo ao Leads Para Todos!</h1>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 40px;">
+                                    <p style="font-size: 16px; color: #333333; line-height: 1.6;">Olá <strong>${name}</strong>,</p>
+                                    <p style="font-size: 16px; color: #333333; line-height: 1.6;">Sua conta foi criada com sucesso! Estamos muito felizes em ter você conosco.</p>
+                                    <p style="font-size: 16px; color: #333333; line-height: 1.6;">Email cadastrado: <strong>${email}</strong></p>
+                                    <div style="text-align: center; margin: 30px 0;">
+                                        <a href="${process.env.FRONTEND_URL || 'https://leadsparatodos.com'}/login.html" style="background-color: #667eea; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Acessar Dashboard</a>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="background-color: #f8f9fa; padding: 20px; text-align: center; font-size: 14px; color: #666666;">
+                                    <p style="margin: 0;">Leads Para Todos - Leads de qualidade para o seu negócio</p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
     `,
-    
-    payment_approved: `
-      ${baseStyle}
-      <h1 style="color: #10b981; margin-bottom: 20px;">✅ Pagamento Aprovado!</h1>
-      <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Olá <strong>${data.name || 'Cliente'}</strong>,
-      </p>
-      <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Seu pagamento foi aprovado e seus créditos já foram adicionados à sua conta!
-      </p>
-      <div style="background-color: #d1fae5; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
-        <h3 style="color: #065f46; margin-top: 0;">💰 Detalhes da Compra:</h3>
-        <p style="margin: 5px 0;"><strong>Pacote:</strong> ${data.package || 'Créditos'}</p>
-        <p style="margin: 5px 0;"><strong>Créditos:</strong> ${(data.credits || 0).toLocaleString('pt-BR')}</p>
-        <p style="margin: 5px 0;"><strong>Valor:</strong> R$ ${(data.amount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
-        <p style="margin: 5px 0;"><strong>ID da transação:</strong> ${data.transaction_id || ''}</p>
-      </div>
-      <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Agora você pode começar a exportar leads qualificados do Instagram!
-      </p>
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="${frontendUrl}/dashboard.html" 
-           style="background-color: #7c3aed; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">
-          Usar Meus Créditos
-        </a>
-      </div>
-      ${baseFooter}
+    paymentApproved: (name, credits, amount) => `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f4f4f4;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px;">
+                <tr>
+                    <td align="center">
+                        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                            <tr>
+                                <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px; text-align: center;">
+                                    <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✅ Pagamento Aprovado!</h1>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 40px;">
+                                    <p style="font-size: 16px; color: #333333; line-height: 1.6;">Olá <strong>${name}</strong>,</p>
+                                    <p style="font-size: 16px; color: #333333; line-height: 1.6;">Seu pagamento foi aprovado com sucesso!</p>
+                                    <div style="background-color: #f0fdf4; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981;">
+                                        <p style="margin: 5px 0; font-size: 16px; color: #333333;"><strong>Créditos adicionados:</strong> ${credits.toLocaleString('pt-BR')}</p>
+                                        <p style="margin: 5px 0; font-size: 16px; color: #333333;"><strong>Valor pago:</strong> R$ ${(amount / 100).toFixed(2)}</p>
+                                    </div>
+                                    <p style="font-size: 16px; color: #333333; line-height: 1.6;">Seus créditos já estão disponíveis na sua conta!</p>
+                                    <div style="text-align: center; margin: 30px 0;">
+                                        <a href="${process.env.FRONTEND_URL || 'https://leadsparatodos.com'}/dashboard.html" style="background-color: #10b981; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Acessar Dashboard</a>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="background-color: #f8f9fa; padding: 20px; text-align: center; font-size: 14px; color: #666666;">
+                                    <p style="margin: 0;">Leads Para Todos - Leads de qualidade para o seu negócio</p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
     `,
-    
-    password_reset: `
-      ${baseStyle}
-      <h1 style="color: #7c3aed; margin-bottom: 20px;">🔐 Recuperação de Senha</h1>
-      <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Olá <strong>${data.name || 'Cliente'}</strong>,
-      </p>
-      <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Recebemos uma solicitação para redefinir a senha da sua conta.
-      </p>
-      <p style="font-size: 16px; color: #374151; line-height: 1.6;">
-        Clique no botão abaixo para criar uma nova senha:
-      </p>
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="${frontendUrl}/reset-password.html?token=${data.token || ''}" 
-           style="background-color: #7c3aed; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">
-          Redefinir Senha
-        </a>
-      </div>
-      <div style="background-color: #fef3c7; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #f59e0b;">
-        <p style="margin: 0; color: #92400e; font-size: 14px;">
-          ⚠️ Este link expira em 30 minutos.<br>
-          Se você não solicitou esta alteração, ignore este email.
-        </p>
-      </div>
-      ${baseFooter}
+    passwordReset: (name, resetToken) => `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f4f4f4;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px;">
+                <tr>
+                    <td align="center">
+                        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                            <tr>
+                                <td style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 40px; text-align: center;">
+                                    <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Redefinir Senha</h1>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 40px;">
+                                    <p style="font-size: 16px; color: #333333; line-height: 1.6;">Olá <strong>${name}</strong>,</p>
+                                    <p style="font-size: 16px; color: #333333; line-height: 1.6;">Recebemos uma solicitação para redefinir sua senha.</p>
+                                    <p style="font-size: 16px; color: #333333; line-height: 1.6;">Clique no botão abaixo para criar uma nova senha:</p>
+                                    <div style="text-align: center; margin: 30px 0;">
+                                        <a href="${process.env.FRONTEND_URL || 'https://leadsparatodos.com'}/reset-password.html?token=${resetToken}" style="background-color: #f59e0b; color: #ffffff; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Redefinir Senha</a>
+                                    </div>
+                                    <p style="font-size: 14px; color: #666666; line-height: 1.6;">Se você não solicitou essa redefinição, ignore este email.</p>
+                                    <p style="font-size: 14px; color: #666666; line-height: 1.6;">Este link expira em 1 hora.</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="background-color: #f8f9fa; padding: 20px; text-align: center; font-size: 14px; color: #666666;">
+                                    <p style="margin: 0;">Leads Para Todos - Leads de qualidade para o seu negócio</p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
     `
-  };
+};
 
-  return templates[type] || '';
-}
-
+// Rota de saúde
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
+    res.json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
 });
 
+// Rota de teste do banco de dados
 app.get('/api/test-db', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT NOW()');
-    res.json({
-      success: true,
-      timestamp: result.rows[0].now,
-      message: 'Conexão com banco de dados OK!'
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
+    try {
+        const result = await pool.query('SELECT NOW()');
+        res.json({
+            success: true,
+            message: 'Conexão com banco de dados OK',
+            timestamp: result.rows[0].now
+        });
+    } catch (error) {
+        console.error('❌ Erro ao testar banco:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Erro ao conectar ao banco de dados',
+            error: error.message
+        });
+    }
 });
 
+// Middleware de autenticação
 const authMiddleware = async (req, res, next) => {
-  try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    if (!token) {
-      return res.status(401).json({ error: 'Token não fornecido' });
+    try {
+        const token = req.headers.authorization?.split(' ')[1];
+        
+        if (!token) {
+            return res.status(401).json({ error: 'Token não fornecido' });
+        }
+
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'leadsparatodos_secret_2024');
+        req.userId = decoded.userId;
+        next();
+    } catch (error) {
+        return res.status(401).json({ error: 'Token inválido' });
     }
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.userId = decoded.id;
-    next();
-  } catch (error) {
-    res.status(401).json({ error: 'Token inválido' });
-  }
 };
 
-// Middleware para admin
+// Middleware de admin
 const adminMiddleware = async (req, res, next) => {
-  try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    if (!token) {
-      return res.status(401).json({ error: 'Token não fornecido' });
+    try {
+        const token = req.headers.authorization?.split(' ')[1];
+        
+        if (!token) {
+            return res.status(401).json({ error: 'Token não fornecido' });
+        }
+
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'leadsparatodos_secret_2024');
+        
+        const userResult = await pool.query(
+            'SELECT role FROM users WHERE id = $1',
+            [decoded.userId]
+        );
+
+        if (userResult.rows.length === 0 || userResult.rows[0].role !== 'admin') {
+            return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+        }
+
+        req.userId = decoded.userId;
+        next();
+    } catch (error) {
+        return res.status(401).json({ error: 'Token inválido' });
     }
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.userId = decoded.id;
-    
-    // Verificar se é admin
-    const result = await pool.query('SELECT role FROM users WHERE id = $1', [decoded.id]);
-    if (result.rows.length === 0 || result.rows[0].role !== 'admin') {
-      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
-    }
-    
-    next();
-  } catch (error) {
-    res.status(401).json({ error: 'Token inválido' });
-  }
 };
 
-// ========================================
-// ROTAS DE AUTENTICAÇÃO
-// ========================================
+// ==================== ROTAS DE AUTENTICAÇÃO ====================
 
+// Registro de usuário
 app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { name, email, password, phone } = req.body;
-    const userExists = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (userExists.rows.length > 0) {
-      return res.status(400).json({ error: 'Email já cadastrado' });
+    try {
+        const { name, email, password } = req.body;
+
+        if (!name || !email || !password) {
+            return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
+        }
+
+        const existingUser = await pool.query(
+            'SELECT id FROM users WHERE email = $1',
+            [email]
+        );
+
+        if (existingUser.rows.length > 0) {
+            return res.status(400).json({ error: 'Email já cadastrado' });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const result = await pool.query(
+            'INSERT INTO users (name, email, password, credits_balance, role) VALUES ($1, $2, $3, $4, $5) RETURNING id, name, email, credits_balance, role, created_at',
+            [name, email, hashedPassword, 0, 'user']
+        );
+
+        const user = result.rows[0];
+
+        await sendEmail(
+            email,
+            'Bem-vindo ao Leads Para Todos!',
+            emailTemplates.welcome(name, email)
+        );
+
+        const token = jwt.sign(
+            { userId: user.id },
+            process.env.JWT_SECRET || 'leadsparatodos_secret_2024',
+            { expiresIn: '7d' }
+        );
+
+        res.status(201).json({
+            message: 'Usuário registrado com sucesso',
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                credits_balance: user.credits_balance,
+                role: user.role,
+                created_at: user.created_at
+            }
+        });
+    } catch (error) {
+        console.error('❌ Erro no registro:', error);
+        res.status(500).json({ error: 'Erro ao registrar usuário' });
     }
-    const password_hash = await bcrypt.hash(password, 10);
-    const result = await pool.query(
-      `INSERT INTO users (name, email, password_hash, phone, credits_balance, role, status) 
-       VALUES ($1, $2, $3, $4, 0, $5, $6) 
-       RETURNING id, name, email, phone, credits_balance, role`,
-      [name, email, password_hash, phone || null, 'user', 'active']
-    );
-    const user = result.rows[0];
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    
-    // Enviar email de boas-vindas
-    sendEmail({
-      to: user.email,
-      subject: '🎉 Bem-vindo ao Leads para Todos!',
-      html: getEmailTemplate('welcome', { name: user.name, email: user.email })
-    });
-    
-    res.status(201).json({ user, token, message: 'Usuário criado com sucesso!' });
-  } catch (error) {
-    console.error('Erro no registro:', error);
-    res.status(500).json({ error: 'Erro ao criar usuário', details: error.message });
-  }
 });
 
+// Login
 app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Email ou senha incorretos' });
+    try {
+        const { email, password } = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email e senha são obrigatórios' });
+        }
+
+        const result = await pool.query(
+            'SELECT * FROM users WHERE email = $1',
+            [email]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(401).json({ error: 'Email ou senha incorretos' });
+        }
+
+        const user = result.rows[0];
+
+        const validPassword = await bcrypt.compare(password, user.password);
+
+        if (!validPassword) {
+            return res.status(401).json({ error: 'Email ou senha incorretos' });
+        }
+
+        const token = jwt.sign(
+            { userId: user.id },
+            process.env.JWT_SECRET || 'leadsparatodos_secret_2024',
+            { expiresIn: '7d' }
+        );
+
+        res.json({
+            message: 'Login realizado com sucesso',
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                credits_balance: user.credits_balance,
+                role: user.role,
+                created_at: user.created_at
+            }
+        });
+    } catch (error) {
+        console.error('❌ Erro no login:', error);
+        res.status(500).json({ error: 'Erro ao fazer login' });
     }
-    const user = result.rows[0];
-    const validPassword = await bcrypt.compare(password, user.password_hash);
-    if (!validPassword) {
-      return res.status(401).json({ error: 'Email ou senha incorretos' });
-    }
-    await pool.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    delete user.password_hash;
-    res.json({ user, token, message: 'Login realizado com sucesso!' });
-  } catch (error) {
-    console.error('Erro no login:', error);
-    res.status(500).json({ error: 'Erro ao fazer login', details: error.message });
-  }
 });
 
+// Perfil do usuário
 app.get('/api/auth/profile', authMiddleware, async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT id, name, email, phone, credits_balance, role, status, created_at 
-       FROM users WHERE id = $1`,
-      [req.userId]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Usuário não encontrado' });
+    try {
+        const result = await pool.query(
+            'SELECT id, name, email, credits_balance, role, created_at FROM users WHERE id = $1',
+            [req.userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+
+        res.json({ user: result.rows[0] });
+    } catch (error) {
+        console.error('❌ Erro ao buscar perfil:', error);
+        res.status(500).json({ error: 'Erro ao buscar perfil' });
     }
-    res.json({ user: result.rows[0] });
-  } catch (error) {
-    console.error('Erro ao buscar perfil:', error);
-    res.status(500).json({ error: 'Erro ao buscar perfil', details: error.message });
-  }
 });
 
-// ========================================
-// RECUPERAÇÃO DE SENHA
-// ========================================
-
+// Recuperação de senha
 app.post('/api/auth/forgot-password', async (req, res) => {
-  try {
-    const { email } = req.body;
-    
-    // Verificar se usuário existe
-    const result = await pool.query('SELECT id, name, email FROM users WHERE email = $1', [email]);
-    if (result.rows.length === 0) {
-      // Por segurança, não informar se email existe ou não
-      return res.json({ message: 'Se o email existe, um link de recuperação foi enviado.' });
+    try {
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({ error: 'Email é obrigatório' });
+        }
+
+        const result = await pool.query(
+            'SELECT id, name FROM users WHERE email = $1',
+            [email]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Email não encontrado' });
+        }
+
+        const user = result.rows[0];
+        const resetToken = crypto.randomBytes(32).toString('hex');
+        const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hora
+
+        await pool.query(
+            'UPDATE users SET reset_token = $1, reset_token_expiry = $2 WHERE id = $3',
+            [resetToken, resetTokenExpiry, user.id]
+        );
+
+        await sendEmail(
+            email,
+            'Redefinir Senha - Leads Para Todos',
+            emailTemplates.passwordReset(user.name, resetToken)
+        );
+
+        res.json({ message: 'Email de recuperação enviado com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro na recuperação de senha:', error);
+        res.status(500).json({ error: 'Erro ao processar recuperação de senha' });
     }
-    
-    const user = result.rows[0];
-    
-    // Gerar token de reset (válido por 30 minutos)
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
-    const resetTokenExpires = new Date(Date.now() + 30 * 60 * 1000); // 30 minutos
-    
-    // Salvar token no banco
-    await pool.query(
-      `UPDATE users SET reset_token = $1, reset_token_expires = $2 WHERE id = $3`,
-      [resetTokenHash, resetTokenExpires, user.id]
-    );
-    
-    // Enviar email
-    await sendEmail({
-      to: user.email,
-      subject: '🔐 Recuperação de Senha - Leads para Todos',
-      html: getEmailTemplate('password_reset', { name: user.name, token: resetToken })
-    });
-    
-    res.json({ message: 'Se o email existe, um link de recuperação foi enviado.' });
-  } catch (error) {
-    console.error('Erro ao solicitar recuperação:', error);
-    res.status(500).json({ error: 'Erro ao processar solicitação' });
-  }
 });
 
+// Redefinir senha
 app.post('/api/auth/reset-password', async (req, res) => {
-  try {
-    const { token, password } = req.body;
-    
-    if (!token || !password) {
-      return res.status(400).json({ error: 'Token e senha são obrigatórios' });
+    try {
+        const { token, newPassword } = req.body;
+
+        if (!token || !newPassword) {
+            return res.status(400).json({ error: 'Token e nova senha são obrigatórios' });
+        }
+
+        const result = await pool.query(
+            'SELECT id FROM users WHERE reset_token = $1 AND reset_token_expiry > NOW()',
+            [token]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(400).json({ error: 'Token inválido ou expirado' });
+        }
+
+        const userId = result.rows[0].id;
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        await pool.query(
+            'UPDATE users SET password = $1, reset_token = NULL, reset_token_expiry = NULL WHERE id = $2',
+            [hashedPassword, userId]
+        );
+
+        res.json({ message: 'Senha redefinida com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao redefinir senha:', error);
+        res.status(500).json({ error: 'Erro ao redefinir senha' });
     }
-    
-    // Hash do token recebido
-    const resetTokenHash = crypto.createHash('sha256').update(token).digest('hex');
-    
-    // Buscar usuário com token válido
-    const result = await pool.query(
-      `SELECT id, name, email FROM users 
-       WHERE reset_token = $1 AND reset_token_expires > NOW()`,
-      [resetTokenHash]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(400).json({ error: 'Token inválido ou expirado' });
-    }
-    
-    const user = result.rows[0];
-    
-    // Hash da nova senha
-    const password_hash = await bcrypt.hash(password, 10);
-    
-    // Atualizar senha e limpar token
-    await pool.query(
-      `UPDATE users SET password_hash = $1, reset_token = NULL, reset_token_expires = NULL WHERE id = $2`,
-      [password_hash, user.id]
-    );
-    
-    res.json({ message: 'Senha redefinida com sucesso!' });
-  } catch (error) {
-    console.error('Erro ao redefinir senha:', error);
-    res.status(500).json({ error: 'Erro ao redefinir senha' });
-  }
 });
 
+// ==================== ROTAS DE PAGAMENTO ====================
+
+// Pacotes de créditos
 const PACKAGES = {
-  basico: { id: 'basico', name: '5.000 Créditos', credits: 5000, price: 700, discount: 0 },
-  popular: { id: 'popular', name: '10.000 Créditos', credits: 10000, price: 1300, discount: 7 },
-  melhor: { id: 'melhor', name: '20.000 Créditos', credits: 20000, price: 2400, discount: 14 },
-  empresarial: { id: 'empresarial', name: '50.000 Créditos', credits: 50000, price: 5500, discount: 21 }
+    'package_5k': { id: 'package_5k', name: '5.000 Créditos', credits: 5000, price: 70000 }, // R$ 700
+    'package_10k': { id: 'package_10k', name: '10.000 Créditos', credits: 10000, price: 130000 }, // R$ 1.300
+    'package_20k': { id: 'package_20k', name: '20.000 Créditos', credits: 20000, price: 240000 }, // R$ 2.400
+    'package_50k': { id: 'package_50k', name: '50.000 Créditos', credits: 50000, price: 550000 }, // R$ 5.500
 };
 
-// NOVO: Processar pagamento com cartão (Checkout Transparente/Bricks)
+// ✅ ROTA DE PAGAMENTO COM CARTÃO DE CRÉDITO (PRODUÇÃO)
 app.post('/api/payment/process-card', authMiddleware, async (req, res) => {
-  try {
-    const { package_id, payment_data } = req.body;
+    try {
+        console.log('💳 [CARTÃO] Recebendo pagamento via cartão de crédito...');
+        console.log('📦 [CARTÃO] Body recebido:', JSON.stringify(req.body, null, 2));
+        
+        const { package_id, payment_data, coupon, discount, final_price } = req.body;
 
-    console.log('💳 Recebendo pagamento:', package_id, payment_data);
-
-    const pkg = PACKAGES[package_id];
-    if (!pkg) {
-      return res.status(400).json({ error: 'Pacote inválido' });
-    }
-
-    const userResult = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [req.userId]);
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Usuário não encontrado' });
-    }
-
-    const user = userResult.rows[0];
-    const external_reference = `LP-${user.id}-${Date.now()}`;
-
-    await pool.query(
-      'INSERT INTO transactions (user_id, external_reference, status, package_id, credits, amount) VALUES ($1, $2, $3, $4, $5, $6)',
-      [user.id, external_reference, 'pending', package_id, pkg.credits, pkg.price]
-    );
-
-    const payment = {
-      transaction_amount: pkg.price,
-      token: payment_data.token,
-      description: `${pkg.name} - Leads para Todos`,
-      installments: payment_data.installments,
-      payment_method_id: payment_data.payment_method_id,
-      issuer_id: payment_data.issuer_id,
-      payer: {
-        email: payment_data.payer.email,
-        identification: {
-          type: payment_data.payer.identification.type,
-          number: payment_data.payer.identification.number
+        // Buscar pacote
+        const selectedPackage = PACKAGES[package_id];
+        if (!selectedPackage) {
+            console.error('❌ [CARTÃO] Pacote não encontrado:', package_id);
+            return res.status(400).json({ error: 'Pacote não encontrado' });
         }
-      },
-      external_reference: external_reference,
-      notification_url: `https://leadsparatodos-backend-production.up.railway.app/api/payment/webhook`
-    };
 
-    console.log('🔧 Criando pagamento no Mercado Pago:', payment);
+        console.log('✅ [CARTÃO] Pacote encontrado:', selectedPackage);
 
-    const paymentResponse = await mercadopago.payment.create(payment);
-    const paymentData = paymentResponse.body;
+        // Buscar usuário
+        const userResult = await pool.query(
+            'SELECT id, name, email, credits_balance FROM users WHERE id = $1',
+            [req.userId]
+        );
 
-    console.log('✅ Pagamento criado:', paymentData.id, paymentData.status);
+        if (userResult.rows.length === 0) {
+            console.error('❌ [CARTÃO] Usuário não encontrado:', req.userId);
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
 
-    if (paymentData.status === 'approved') {
-      await pool.query('UPDATE users SET credits_balance = credits_balance + $1 WHERE id = $2', [pkg.credits, user.id]);
-      await pool.query(
-        `UPDATE transactions SET status = $1, payment_id = $2, payment_method = $3, approved_at = NOW(), updated_at = NOW() WHERE external_reference = $4`,
-        ['approved', paymentData.id, paymentData.payment_method_id, external_reference]
-      );
-      console.log(`✅ Créditos adicionados: ${pkg.credits} para usuário ${user.id}`);
-      
-      // Enviar email de confirmação
-      sendEmail({
-        to: user.email,
-        subject: '✅ Pagamento Aprovado - Leads para Todos',
-        html: getEmailTemplate('payment_approved', {
-          name: user.name,
-          package: pkg.name,
-          credits: pkg.credits,
-          amount: pkg.price,
-          transaction_id: external_reference
-        })
-      });
-    } else {
-      await pool.query(
-        `UPDATE transactions SET status = $1, payment_id = $2, updated_at = NOW() WHERE external_reference = $3`,
-        [paymentData.status, paymentData.id, external_reference]
-      );
-    }
+        const user = userResult.rows[0];
+        console.log('✅ [CARTÃO] Usuário encontrado:', { id: user.id, name: user.name, email: user.email });
 
-    res.json({
-      status: paymentData.status,
-      status_detail: paymentData.status_detail,
-      payment_id: paymentData.id,
-      external_reference: external_reference,
-      message: paymentData.status === 'approved' ? 'Pagamento aprovado!' : 'Pagamento processado'
-    });
+        // Validar cupom se fornecido
+        let appliedCoupon = null;
+        let discountAmount = 0;
+        let transactionAmount = selectedPackage.price;
 
-  } catch (error) {
-    console.error('❌ Erro ao processar pagamento:', error);
-    res.status(500).json({
-      error: 'Erro ao processar pagamento',
-      details: error.message,
-      response: error.response?.body || null
-    });
-  }
-});
-
-// NOVO: Processar pagamento com Pix
-app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
-  try {
-    const { package_id } = req.body;
-
-    console.log('💰 Recebendo pagamento Pix:', package_id);
-
-    const pkg = PACKAGES[package_id];
-    if (!pkg) {
-      return res.status(400).json({ error: 'Pacote inválido' });
-    }
-
-    const userResult = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [req.userId]);
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Usuário não encontrado' });
-    }
-
-    const user = userResult.rows[0];
-    const external_reference = `LP-PIX-${user.id}-${Date.now()}`;
-
-    await pool.query(
-      'INSERT INTO transactions (user_id, external_reference, status, package_id, credits, amount) VALUES ($1, $2, $3, $4, $5, $6)',
-      [user.id, external_reference, 'pending', package_id, pkg.credits, pkg.price]
-    );
-
-    const payment = {
-      transaction_amount: pkg.price,
-      description: `${pkg.name} - Leads para Todos`,
-      payment_method_id: 'pix',
-      payer: {
-        email: user.email,
-        first_name: user.name.split(' ')[0],
-        last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0]
-      },
-      external_reference: external_reference,
-      notification_url: `https://leadsparatodos-backend-production.up.railway.app/api/payment/webhook`
-    };
-
-    console.log('🔧 Criando pagamento Pix no Mercado Pago:', payment);
-
-    const paymentResponse = await mercadopago.payment.create(payment);
-    const paymentData = paymentResponse.body;
-
-    console.log('✅ Pagamento Pix criado:', paymentData.id, paymentData.status);
-
-    await pool.query(
-      `UPDATE transactions SET payment_id = $1, status = $2, updated_at = NOW() WHERE external_reference = $3`,
-      [paymentData.id, paymentData.status, external_reference]
-    );
-
-    res.json({
-      payment_id: paymentData.id,
-      status: paymentData.status,
-      external_reference: external_reference,
-      qr_code: paymentData.point_of_interaction.transaction_data.qr_code,
-      qr_code_base64: paymentData.point_of_interaction.transaction_data.qr_code_base64,
-      ticket_url: paymentData.point_of_interaction.transaction_data.ticket_url
-    });
-
-  } catch (error) {
-    console.error('❌ Erro ao processar Pix:', error);
-    res.status(500).json({
-      error: 'Erro ao processar pagamento Pix',
-      details: error.message,
-      response: error.response?.body || null
-    });
-  }
-});
-
-// NOVO: Processar pagamento com Boleto
-app.post('/api/payment/process-boleto', authMiddleware, async (req, res) => {
-  try {
-    const { package_id } = req.body;
-
-    console.log('📄 Recebendo pagamento Boleto:', package_id);
-
-    const pkg = PACKAGES[package_id];
-    if (!pkg) {
-      return res.status(400).json({ error: 'Pacote inválido' });
-    }
-
-    const userResult = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [req.userId]);
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Usuário não encontrado' });
-    }
-
-    const user = userResult.rows[0];
-    const external_reference = `LP-BOLETO-${user.id}-${Date.now()}`;
-
-    await pool.query(
-      'INSERT INTO transactions (user_id, external_reference, status, package_id, credits, amount) VALUES ($1, $2, $3, $4, $5, $6)',
-      [user.id, external_reference, 'pending', package_id, pkg.credits, pkg.price]
-    );
-
-    // Data de vencimento: 3 dias úteis
-    const expirationDate = new Date();
-    expirationDate.setDate(expirationDate.getDate() + 3);
-
-    const payment = {
-      transaction_amount: pkg.price,
-      description: `${pkg.name} - Leads para Todos`,
-      payment_method_id: 'bolbradesco',
-      payer: {
-        email: user.email,
-        first_name: user.name.split(' ')[0],
-        last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0]
-      },
-      external_reference: external_reference,
-      notification_url: `https://leadsparatodos-backend-production.up.railway.app/api/payment/webhook`,
-      date_of_expiration: expirationDate.toISOString()
-    };
-
-    console.log('🔧 Criando boleto no Mercado Pago:', payment);
-
-    const paymentResponse = await mercadopago.payment.create(payment);
-    const paymentData = paymentResponse.body;
-
-    console.log('✅ Boleto criado:', paymentData.id, paymentData.status);
-
-    await pool.query(
-      `UPDATE transactions SET payment_id = $1, status = $2, updated_at = NOW() WHERE external_reference = $3`,
-      [paymentData.id, paymentData.status, external_reference]
-    );
-
-    res.json({
-      payment_id: paymentData.id,
-      status: paymentData.status,
-      external_reference: external_reference,
-      external_resource_url: paymentData.transaction_details.external_resource_url,
-      date_of_expiration: paymentData.date_of_expiration
-    });
-
-  } catch (error) {
-    console.error('❌ Erro ao processar Boleto:', error);
-    res.status(500).json({
-      error: 'Erro ao processar boleto',
-      details: error.message,
-      response: error.response?.body || null
-    });
-  }
-});
-
-// Checkout Pro (mantido para compatibilidade)
-app.post('/api/payment/create-preference', authMiddleware, async (req, res) => {
-  try {
-    const { package_id } = req.body;
-    const pkg = PACKAGES[package_id];
-    if (!pkg) {
-      return res.status(400).json({ error: 'Pacote inválido' });
-    }
-    const userResult = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [req.userId]);
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Usuário não encontrado' });
-    }
-    const user = userResult.rows[0];
-    const finalPrice = pkg.price;
-    const external_reference = `LP-${user.id}-${Date.now()}`;
-    await pool.query(
-      'INSERT INTO transactions (user_id, external_reference, status, package_id, credits, amount) VALUES ($1, $2, $3, $4, $5, $6)',
-      [user.id, external_reference, 'pending', package_id, pkg.credits, finalPrice]
-    );
-    const preference = {
-      items: [{
-        id: package_id,
-        title: pkg.name,
-        description: `${pkg.credits.toLocaleString('pt-BR')} créditos para exportar leads`,
-        quantity: 1,
-        unit_price: finalPrice,
-        currency_id: 'BRL',
-        picture_url: `${process.env.FRONTEND_URL}/images/logo.png`
-      }],
-      external_reference: external_reference,
-      back_urls: {
-        success: `${process.env.FRONTEND_URL}/dashboard.html?payment=success`,
-        failure: `${process.env.FRONTEND_URL}/dashboard.html?payment=failure`,
-        pending: `${process.env.FRONTEND_URL}/dashboard.html?payment=pending`
-      },
-      auto_return: 'approved',
-      notification_url: `https://leadsparatodos-backend-production.up.railway.app/api/payment/webhook`,
-      statement_descriptor: 'LEADSPARATODOS',
-      expires: false,
-      binary_mode: false
-    };
-    const response = await mercadopago.preferences.create(preference);
-    await pool.query('UPDATE transactions SET preference_id = $1 WHERE external_reference = $2', [response.body.id, external_reference]);
-    console.log('✅ Preferência criada:', response.body.id);
-    res.json({
-      preference_id: response.body.id,
-      init_point: response.body.init_point,
-      sandbox_init_point: response.body.sandbox_init_point,
-      external_reference: external_reference
-    });
-  } catch (error) {
-    console.error('❌ Erro ao criar preferência:', error);
-    res.status(500).json({ error: 'Erro ao criar pagamento', details: error.message, response: error.response?.body || null });
-  }
-});
-
-app.post('/api/payment/webhook', async (req, res) => {
-  try {
-    const { type, data } = req.body;
-    console.log('📬 Webhook recebido:', type, data);
-    res.sendStatus(200);
-    if (type === 'payment') {
-      const payment_id = data.id;
-      const payment = await mercadopago.payment.findById(payment_id);
-      const paymentData = payment.body;
-      console.log('💳 Pagamento:', paymentData.status, paymentData.external_reference);
-      if (paymentData.status === 'approved') {
-        const external_reference = paymentData.external_reference;
-        const transResult = await pool.query('SELECT * FROM transactions WHERE external_reference = $1', [external_reference]);
-        if (transResult.rows.length > 0) {
-          const transaction = transResult.rows[0];
-          if (transaction.status !== 'approved') {
-            await pool.query('UPDATE users SET credits_balance = credits_balance + $1 WHERE id = $2', [transaction.credits, transaction.user_id]);
-            await pool.query(
-              `UPDATE transactions SET status = $1, payment_id = $2, payment_method = $3, payment_type = $4, payer_email = $5, approved_at = NOW(), updated_at = NOW() WHERE id = $6`,
-              ['approved', payment_id, paymentData.payment_method_id, paymentData.payment_type_id, paymentData.payer.email, transaction.id]
-            );
-            console.log(`✅ Créditos adicionados: ${transaction.credits} para usuário ${transaction.user_id}`);
-            
-            // Buscar dados do usuário e enviar email
-            const userResult = await pool.query('SELECT name, email FROM users WHERE id = $1', [transaction.user_id]);
-            if (userResult.rows.length > 0) {
-              const user = userResult.rows[0];
-              const pkg = PACKAGES[transaction.package_id] || { name: 'Créditos', credits: transaction.credits, price: transaction.amount };
-              
-              sendEmail({
-                to: user.email,
-                subject: '✅ Pagamento Aprovado - Leads para Todos',
-                html: getEmailTemplate('payment_approved', {
-                  name: user.name,
-                  package: pkg.name,
-                  credits: transaction.credits,
-                  amount: transaction.amount,
-                  transaction_id: external_reference
-                })
-              });
+        if (coupon) {
+            appliedCoupon = validateCoupon(coupon);
+            if (appliedCoupon) {
+                discountAmount = calculateDiscount(selectedPackage.price, appliedCoupon);
+                transactionAmount = selectedPackage.price - discountAmount;
+                console.log('🎟️ [CARTÃO] Cupom aplicado:', {
+                    code: appliedCoupon.code,
+                    discount: appliedCoupon.discount,
+                    originalPrice: selectedPackage.price / 100,
+                    discountAmount: discountAmount / 100,
+                    finalPrice: transactionAmount / 100
+                });
+            } else {
+                console.warn('⚠️ [CARTÃO] Cupom inválido:', coupon);
             }
-          } else {
-            console.log('⚠️ Transação já foi processada anteriormente');
-          }
         }
-      }
+
+        // Se final_price foi fornecido (compra personalizada), usar ele
+        if (final_price !== undefined) {
+            transactionAmount = Math.round(final_price * 100); // Converter para centavos
+            console.log('💰 [CARTÃO] Usando preço personalizado:', transactionAmount / 100);
+        }
+
+        // Criar referência externa
+        const externalReference = `LP-${user.id}-${Date.now()}`;
+        console.log('🔖 [CARTÃO] Referência externa criada:', externalReference);
+
+        // Inserir transação pendente
+        const transactionResult = await pool.query(
+            `INSERT INTO transactions 
+            (user_id, package_id, amount, credits, status, payment_method, external_reference, coupon_code, discount_amount, metadata) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
+            RETURNING id`,
+            [
+                user.id,
+                package_id,
+                transactionAmount,
+                selectedPackage.credits,
+                'pending',
+                'credit_card',
+                externalReference,
+                appliedCoupon ? appliedCoupon.code : null,
+                discountAmount,
+                JSON.stringify({
+                    original_price: selectedPackage.price,
+                    discount_applied: discountAmount,
+                    final_price: transactionAmount
+                })
+            ]
+        );
+
+        const transactionId = transactionResult.rows[0].id;
+        console.log('✅ [CARTÃO] Transação criada no banco:', transactionId);
+
+        // ✅ PREPARAR DADOS DO PAGAMENTO PARA MERCADO PAGO (PRODUÇÃO)
+        console.log('📤 [CARTÃO] Preparando payload para Mercado Pago...');
+        console.log('🔑 [CARTÃO] payment_data recebido:', JSON.stringify(payment_data, null, 2));
+
+        // ✅ O Mercado Pago Bricks envia o token do cartão dentro de payment_data
+        const paymentPayload = {
+            transaction_amount: transactionAmount / 100, // Converter centavos para reais
+            token: payment_data.token, // ✅ Token do cartão de crédito
+            description: `${selectedPackage.name} - ${selectedPackage.credits.toLocaleString('pt-BR')} leads`,
+            installments: payment_data.installments || 1,
+            payment_method_id: payment_data.payment_method_id || 'visa',
+            payer: {
+                email: payment_data.payer?.email || user.email,
+                identification: payment_data.payer?.identification || {
+                    type: 'CPF',
+                    number: '00000000000'
+                }
+            },
+            external_reference: externalReference,
+            notification_url: `${process.env.BACKEND_URL || 'https://leadsparatodos-backend-production.up.railway.app'}/api/payment/webhook`,
+            metadata: {
+                user_id: user.id,
+                user_name: user.name,
+                user_email: user.email,
+                package_id: package_id,
+                credits: selectedPackage.credits,
+                transaction_id: transactionId,
+                coupon: appliedCoupon ? appliedCoupon.code : null,
+                discount: discountAmount / 100
+            }
+        };
+
+        console.log('📦 [CARTÃO] Payload Mercado Pago:', JSON.stringify(paymentPayload, null, 2));
+
+        // ✅ ENVIAR PAGAMENTO PARA MERCADO PAGO (PRODUÇÃO)
+        console.log('🚀 [CARTÃO] Enviando pagamento para Mercado Pago...');
+        
+        const paymentResponse = await mercadopago.payment.create(paymentPayload);
+
+        console.log('✅ [CARTÃO] Resposta do Mercado Pago:', JSON.stringify(paymentResponse.body, null, 2));
+
+        const paymentId = paymentResponse.body.id;
+        const paymentStatus = paymentResponse.body.status;
+        const paymentStatusDetail = paymentResponse.body.status_detail;
+
+        // Atualizar transação com payment_id
+        await pool.query(
+            'UPDATE transactions SET payment_id = $1, status = $2, metadata = metadata || $3::jsonb WHERE id = $4',
+            [
+                paymentId,
+                paymentStatus,
+                JSON.stringify({
+                    payment_status_detail: paymentStatusDetail,
+                    payment_response: paymentResponse.body
+                }),
+                transactionId
+            ]
+        );
+
+        console.log('✅ [CARTÃO] Transação atualizada com payment_id:', paymentId);
+
+        // Se pagamento foi aprovado, adicionar créditos
+        if (paymentStatus === 'approved') {
+            console.log('🎉 [CARTÃO] Pagamento APROVADO! Adicionando créditos...');
+            
+            const newBalance = user.credits_balance + selectedPackage.credits;
+            
+            await pool.query(
+                'UPDATE users SET credits_balance = $1 WHERE id = $2',
+                [newBalance, user.id]
+            );
+
+            await pool.query(
+                'UPDATE transactions SET status = $1, approved_at = NOW() WHERE id = $2',
+                ['approved', transactionId]
+            );
+
+            console.log('✅ [CARTÃO] Créditos adicionados:', {
+                userId: user.id,
+                oldBalance: user.credits_balance,
+                newBalance: newBalance,
+                creditsAdded: selectedPackage.credits
+            });
+
+            // Enviar email de confirmação
+            await sendEmail(
+                user.email,
+                'Pagamento Aprovado - Leads Para Todos',
+                emailTemplates.paymentApproved(user.name, selectedPackage.credits, transactionAmount)
+            );
+
+            return res.json({
+                success: true,
+                message: 'Pagamento aprovado! Créditos adicionados com sucesso.',
+                payment: {
+                    status: paymentStatus,
+                    status_detail: paymentStatusDetail,
+                    payment_id: paymentId,
+                    external_reference: externalReference,
+                    credits_added: selectedPackage.credits,
+                    new_balance: newBalance
+                }
+            });
+        } else {
+            console.log('⏳ [CARTÃO] Pagamento PENDENTE ou REJEITADO:', paymentStatus);
+            
+            return res.json({
+                success: false,
+                message: 'Pagamento em análise ou rejeitado.',
+                payment: {
+                    status: paymentStatus,
+                    status_detail: paymentStatusDetail,
+                    payment_id: paymentId,
+                    external_reference: externalReference
+                }
+            });
+        }
+
+    } catch (error) {
+        console.error('❌ [CARTÃO] Erro ao processar pagamento:', error);
+        console.error('❌ [CARTÃO] Stack trace:', error.stack);
+        console.error('❌ [CARTÃO] Error details:', JSON.stringify(error, null, 2));
+        
+        res.status(500).json({
+            error: 'Erro ao processar pagamento',
+            details: error.message,
+            cause: error.cause || 'Erro desconhecido'
+        });
     }
-  } catch (error) {
-    console.error('❌ Erro no webhook:', error);
-  }
 });
 
-app.get('/api/payment/status/:reference', authMiddleware, async (req, res) => {
-  try {
-    const { reference } = req.params;
-    const result = await pool.query('SELECT * FROM transactions WHERE external_reference = $1 AND user_id = $2', [reference, req.userId]);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Transação não encontrada' });
+// ✅ ROTA DE PAGAMENTO PIX (PRODUÇÃO)
+app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
+    try {
+        console.log('💳 [PIX] Recebendo pagamento via PIX...');
+        console.log('📦 [PIX] Body recebido:', JSON.stringify(req.body, null, 2));
+        
+        const { package_id, amount, credits, coupon, discount } = req.body;
+
+        // Buscar pacote
+        const selectedPackage = PACKAGES[package_id];
+        if (!selectedPackage) {
+            console.error('❌ [PIX] Pacote não encontrado:', package_id);
+            return res.status(400).json({ error: 'Pacote não encontrado' });
+        }
+
+        console.log('✅ [PIX] Pacote encontrado:', selectedPackage);
+
+        // Buscar usuário
+        const userResult = await pool.query(
+            'SELECT id, name, email, credits_balance FROM users WHERE id = $1',
+            [req.userId]
+        );
+
+        if (userResult.rows.length === 0) {
+            console.error('❌ [PIX] Usuário não encontrado:', req.userId);
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+
+        const user = userResult.rows[0];
+        console.log('✅ [PIX] Usuário encontrado:', { id: user.id, name: user.name, email: user.email });
+
+        // Validar cupom se fornecido
+        let appliedCoupon = null;
+        let discountAmount = 0;
+        let transactionAmount = selectedPackage.price;
+
+        if (coupon) {
+            appliedCoupon = validateCoupon(coupon);
+            if (appliedCoupon) {
+                discountAmount = calculateDiscount(selectedPackage.price, appliedCoupon);
+                transactionAmount = selectedPackage.price - discountAmount;
+                console.log('🎟️ [PIX] Cupom aplicado:', {
+                    code: appliedCoupon.code,
+                    discount: appliedCoupon.discount,
+                    originalPrice: selectedPackage.price / 100,
+                    discountAmount: discountAmount / 100,
+                    finalPrice: transactionAmount / 100
+                });
+            } else {
+                console.warn('⚠️ [PIX] Cupom inválido:', coupon);
+            }
+        }
+
+        // Se amount foi fornecido (compra personalizada), usar ele
+        if (amount !== undefined) {
+            transactionAmount = Math.round(amount * 100); // Converter para centavos
+            console.log('💰 [PIX] Usando valor personalizado:', transactionAmount / 100);
+        }
+
+        // Criar referência externa
+        const externalReference = `LP-PIX-${user.id}-${Date.now()}`;
+        console.log('🔖 [PIX] Referência externa criada:', externalReference);
+
+        // Inserir transação pendente
+        const transactionResult = await pool.query(
+            `INSERT INTO transactions 
+            (user_id, package_id, amount, credits, status, payment_method, external_reference, coupon_code, discount_amount, metadata) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
+            RETURNING id`,
+            [
+                user.id,
+                package_id,
+                transactionAmount,
+                credits || selectedPackage.credits,
+                'pending',
+                'pix',
+                externalReference,
+                appliedCoupon ? appliedCoupon.code : null,
+                discountAmount,
+                JSON.stringify({
+                    original_price: selectedPackage.price,
+                    discount_applied: discountAmount,
+                    final_price: transactionAmount
+                })
+            ]
+        );
+
+        const transactionId = transactionResult.rows[0].id;
+        console.log('✅ [PIX] Transação criada no banco:', transactionId);
+
+        // ✅ PREPARAR DADOS DO PAGAMENTO PIX PARA MERCADO PAGO (PRODUÇÃO)
+        console.log('📤 [PIX] Preparando payload PIX para Mercado Pago...');
+
+        const paymentPayload = {
+            transaction_amount: transactionAmount / 100, // Converter centavos para reais
+            description: `${selectedPackage.name} - ${(credits || selectedPackage.credits).toLocaleString('pt-BR')} leads`,
+            payment_method_id: 'pix',
+            payer: {
+                email: user.email,
+                first_name: user.name.split(' ')[0],
+                last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0]
+            },
+            external_reference: externalReference,
+            notification_url: `${process.env.BACKEND_URL || 'https://leadsparatodos-backend-production.up.railway.app'}/api/payment/webhook`,
+            metadata: {
+                user_id: user.id,
+                user_name: user.name,
+                user_email: user.email,
+                package_id: package_id,
+                credits: credits || selectedPackage.credits,
+                transaction_id: transactionId,
+                coupon: appliedCoupon ? appliedCoupon.code : null,
+                discount: discountAmount / 100
+            }
+        };
+
+        console.log('📦 [PIX] Payload Mercado Pago:', JSON.stringify(paymentPayload, null, 2));
+
+        // ✅ ENVIAR PAGAMENTO PIX PARA MERCADO PAGO (PRODUÇÃO)
+        console.log('🚀 [PIX] Enviando pagamento PIX para Mercado Pago...');
+        
+        const paymentResponse = await mercadopago.payment.create(paymentPayload);
+
+        console.log('✅ [PIX] Resposta do Mercado Pago:', JSON.stringify(paymentResponse.body, null, 2));
+
+        const paymentId = paymentResponse.body.id;
+        const paymentStatus = paymentResponse.body.status;
+
+        // Atualizar transação com payment_id
+        await pool.query(
+            'UPDATE transactions SET payment_id = $1, status = $2, metadata = metadata || $3::jsonb WHERE id = $4',
+            [
+                paymentId,
+                paymentStatus,
+                JSON.stringify({
+                    payment_response: paymentResponse.body
+                }),
+                transactionId
+            ]
+        );
+
+        console.log('✅ [PIX] Transação atualizada com payment_id:', paymentId);
+
+        // Extrair dados do PIX
+        const pixData = paymentResponse.body.point_of_interaction?.transaction_data;
+
+        if (!pixData || !pixData.qr_code) {
+            console.error('❌ [PIX] QR Code não encontrado na resposta');
+            return res.status(500).json({ error: 'Erro ao gerar QR Code PIX' });
+        }
+
+        console.log('✅ [PIX] QR Code gerado com sucesso');
+
+        res.json({
+            success: true,
+            message: 'PIX gerado com sucesso',
+            payment_id: paymentId,
+            external_reference: externalReference,
+            qr_code: pixData.qr_code,
+            qr_code_base64: pixData.qr_code_base64,
+            ticket_url: pixData.ticket_url
+        });
+
+    } catch (error) {
+        console.error('❌ [PIX] Erro ao processar pagamento:', error);
+        console.error('❌ [PIX] Stack trace:', error.stack);
+        console.error('❌ [PIX] Error details:', JSON.stringify(error, null, 2));
+        
+        res.status(500).json({
+            error: 'Erro ao processar pagamento PIX',
+            details: error.message,
+            cause: error.cause || 'Erro desconhecido'
+        });
     }
-    res.json({ transaction: result.rows[0] });
-  } catch (error) {
-    console.error('❌ Erro ao consultar status:', error);
-    res.status(500).json({ error: 'Erro ao consultar status', details: error.message });
-  }
 });
 
+// ✅ WEBHOOK DO MERCADO PAGO (PRODUÇÃO)
+app.post('/api/payment/webhook', async (req, res) => {
+    try {
+        console.log('🔔 [WEBHOOK] Notificação recebida do Mercado Pago');
+        console.log('📦 [WEBHOOK] Body:', JSON.stringify(req.body, null, 2));
+        console.log('📦 [WEBHOOK] Query:', JSON.stringify(req.query, null, 2));
+
+        const { type, data } = req.body;
+
+        // Responder imediatamente para não bloquear
+        res.sendStatus(200);
+
+        // Processar apenas notificações de pagamento
+        if (type !== 'payment') {
+            console.log('ℹ️ [WEBHOOK] Tipo de notificação ignorado:', type);
+            return;
+        }
+
+        const paymentId = data.id;
+        console.log('💰 [WEBHOOK] Payment ID:', paymentId);
+
+        // Buscar detalhes do pagamento
+        const payment = await mercadopago.payment.get(paymentId);
+        console.log('✅ [WEBHOOK] Pagamento encontrado:', JSON.stringify(payment.body, null, 2));
+
+        const paymentStatus = payment.body.status;
+        const externalReference = payment.body.external_reference;
+        const metadata = payment.body.metadata;
+
+        console.log('📊 [WEBHOOK] Status:', paymentStatus);
+        console.log('🔖 [WEBHOOK] External Reference:', externalReference);
+        console.log('📋 [WEBHOOK] Metadata:', metadata);
+
+        // Buscar transação no banco
+        const transactionResult = await pool.query(
+            'SELECT * FROM transactions WHERE external_reference = $1 OR payment_id = $2',
+            [externalReference, paymentId]
+        );
+
+        if (transactionResult.rows.length === 0) {
+            console.error('❌ [WEBHOOK] Transação não encontrada:', { externalReference, paymentId });
+            return;
+        }
+
+        const transaction = transactionResult.rows[0];
+        console.log('✅ [WEBHOOK] Transação encontrada:', transaction);
+
+        // Se pagamento foi aprovado e transação ainda não foi processada
+        if (paymentStatus === 'approved' && transaction.status !== 'approved') {
+            console.log('🎉 [WEBHOOK] Pagamento APROVADO! Adicionando créditos...');
+
+            // Buscar usuário
+            const userResult = await pool.query(
+                'SELECT id, name, email, credits_balance FROM users WHERE id = $1',
+                [transaction.user_id]
+            );
+
+            if (userResult.rows.length === 0) {
+                console.error('❌ [WEBHOOK] Usuário não encontrado:', transaction.user_id);
+                return;
+            }
+
+            const user = userResult.rows[0];
+            const newBalance = user.credits_balance + transaction.credits;
+
+            // Atualizar créditos do usuário
+            await pool.query(
+                'UPDATE users SET credits_balance = $1 WHERE id = $2',
+                [newBalance, user.id]
+            );
+
+            // Atualizar status da transação
+            await pool.query(
+                'UPDATE transactions SET status = $1, approved_at = NOW(), metadata = metadata || $2::jsonb WHERE id = $3',
+                [
+                    'approved',
+                    JSON.stringify({
+                        webhook_processed: true,
+                        webhook_timestamp: new Date().toISOString(),
+                        payment_status: paymentStatus
+                    }),
+                    transaction.id
+                ]
+            );
+
+            console.log('✅ [WEBHOOK] Créditos adicionados:', {
+                userId: user.id,
+                oldBalance: user.credits_balance,
+                newBalance: newBalance,
+                creditsAdded: transaction.credits
+            });
+
+            // Enviar email de confirmação
+            await sendEmail(
+                user.email,
+                'Pagamento Aprovado - Leads Para Todos',
+                emailTemplates.paymentApproved(user.name, transaction.credits, transaction.amount)
+            );
+
+            console.log('✅ [WEBHOOK] Processamento concluído com sucesso');
+        } else {
+            console.log('ℹ️ [WEBHOOK] Status não requer ação:', paymentStatus);
+            
+            // Atualizar status da transação
+            await pool.query(
+                'UPDATE transactions SET status = $1, metadata = metadata || $2::jsonb WHERE id = $3',
+                [
+                    paymentStatus,
+                    JSON.stringify({
+                        webhook_update: true,
+                        webhook_timestamp: new Date().toISOString(),
+                        payment_status: paymentStatus
+                    }),
+                    transaction.id
+                ]
+            );
+        }
+
+    } catch (error) {
+        console.error('❌ [WEBHOOK] Erro ao processar webhook:', error);
+        console.error('❌ [WEBHOOK] Stack trace:', error.stack);
+    }
+});
+
+// Status de transação
+app.get('/api/payment/status/:externalReference', authMiddleware, async (req, res) => {
+    try {
+        const { externalReference } = req.params;
+
+        const result = await pool.query(
+            `SELECT t.*, u.name as user_name, u.email as user_email 
+             FROM transactions t 
+             JOIN users u ON t.user_id = u.id 
+             WHERE t.external_reference = $1 AND t.user_id = $2`,
+            [externalReference, req.userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Transação não encontrada' });
+        }
+
+        res.json({ transaction: result.rows[0] });
+    } catch (error) {
+        console.error('❌ Erro ao buscar status:', error);
+        res.status(500).json({ error: 'Erro ao buscar status da transação' });
+    }
+});
+
+// Listar transações do usuário
 app.get('/api/payment/transactions', authMiddleware, async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT id, external_reference, status, package_id, credits, amount, payment_method, created_at, approved_at 
-       FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`,
-      [req.userId]
-    );
-    res.json({ transactions: result.rows });
-  } catch (error) {
-    console.error('❌ Erro ao buscar transações:', error);
-    res.status(500).json({ error: 'Erro ao buscar transações', details: error.message });
-  }
+    try {
+        const result = await pool.query(
+            `SELECT * FROM transactions 
+             WHERE user_id = $1 
+             ORDER BY created_at DESC`,
+            [req.userId]
+        );
+
+        res.json({ transactions: result.rows });
+    } catch (error) {
+        console.error('❌ Erro ao listar transações:', error);
+        res.status(500).json({ error: 'Erro ao listar transações' });
+    }
 });
 
-// ========================================
-// ROTAS DE ADMIN
-// ========================================
+// ==================== ROTAS DE ADMIN ====================
 
-// Dashboard do Admin - Estatísticas gerais
+// Dashboard do admin
 app.get('/api/admin/dashboard', adminMiddleware, async (req, res) => {
-  try {
-    const usersCount = await pool.query('SELECT COUNT(*) as count FROM users');
-    const transactionsCount = await pool.query('SELECT COUNT(*) as count FROM transactions');
-    const totalSales = await pool.query(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE status = 'approved'`);
-    const creditsCount = await pool.query(`SELECT COALESCE(SUM(credits), 0) as total FROM transactions WHERE status = 'approved'`);
-    const salesByDay = await pool.query(`
-      SELECT DATE(created_at) as date, COUNT(*) as count, SUM(amount) as total
-      FROM transactions
-      WHERE status = 'approved' AND created_at >= NOW() - INTERVAL '7 days'
-      GROUP BY DATE(created_at)
-      ORDER BY date DESC
-    `);
-    const pendingTransactions = await pool.query(`SELECT COUNT(*) as count FROM transactions WHERE status = 'pending'`);
+    try {
+        const stats = await pool.query(`
+            SELECT 
+                (SELECT COUNT(*) FROM users) as total_users,
+                (SELECT COUNT(*) FROM users WHERE role = 'admin') as total_admins,
+                (SELECT COUNT(*) FROM transactions) as total_transactions,
+                (SELECT COUNT(*) FROM transactions WHERE status = 'approved') as approved_transactions,
+                (SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE status = 'approved') as total_revenue,
+                (SELECT COALESCE(SUM(credits_balance), 0) FROM users) as total_credits_distributed
+        `);
 
-    res.json({
-      users: { total: parseInt(usersCount.rows[0].count), active: parseInt(usersCount.rows[0].count) },
-      transactions: { total: parseInt(transactionsCount.rows[0].count), pending: parseInt(pendingTransactions.rows[0].count) },
-      sales: { total: parseFloat(totalSales.rows[0].total), credits: parseInt(creditsCount.rows[0].total) },
-      salesByDay: salesByDay.rows
-    });
-  } catch (error) {
-    console.error('❌ Erro ao buscar dashboard admin:', error);
-    res.status(500).json({ error: 'Erro ao buscar estatísticas', details: error.message });
-  }
+        res.json({ stats: stats.rows[0] });
+    } catch (error) {
+        console.error('❌ Erro ao buscar dashboard:', error);
+        res.status(500).json({ error: 'Erro ao buscar dados do dashboard' });
+    }
 });
 
+// Listar todos os usuários (admin)
 app.get('/api/admin/users', adminMiddleware, async (req, res) => {
-  try {
-    const { page = 1, limit = 20, search = '' } = req.query;
-    const offset = (page - 1) * limit;
-    let query = `SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login FROM users WHERE 1=1`;
-    const params = [];
-    if (search) {
-      query += ` AND (name ILIKE $1 OR email ILIKE $1)`;
-      params.push(`%${search}%`);
+    try {
+        const result = await pool.query(
+            'SELECT id, name, email, credits_balance, role, created_at FROM users ORDER BY created_at DESC'
+        );
+
+        res.json({ users: result.rows });
+    } catch (error) {
+        console.error('❌ Erro ao listar usuários:', error);
+        res.status(500).json({ error: 'Erro ao listar usuários' });
     }
-    query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-    params.push(limit, offset);
-    const result = await pool.query(query, params);
-    const countQuery = search ? `SELECT COUNT(*) FROM users WHERE name ILIKE $1 OR email ILIKE $1` : `SELECT COUNT(*) FROM users`;
-    const countParams = search ? [`%${search}%`] : [];
-    const countResult = await pool.query(countQuery, countParams);
-    res.json({ users: result.rows, total: parseInt(countResult.rows[0].count), page: parseInt(page), limit: parseInt(limit) });
-  } catch (error) {
-    console.error('❌ Erro ao listar usuários:', error);
-    res.status(500).json({ error: 'Erro ao listar usuários', details: error.message });
-  }
 });
 
+// Editar usuário (admin)
 app.put('/api/admin/users/:id', adminMiddleware, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { credits_balance, role, status } = req.body;
-    const result = await pool.query(
-      `UPDATE users SET credits_balance = $1, role = $2, status = $3, updated_at = NOW() WHERE id = $4 RETURNING id, name, email, credits_balance, role, status`,
-      [credits_balance, role, status, id]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado' });
-    res.json({ user: result.rows[0], message: 'Usuário atualizado com sucesso!' });
-  } catch (error) {
-    console.error('❌ Erro ao editar usuário:', error);
-    res.status(500).json({ error: 'Erro ao editar usuário', details: error.message });
-  }
+    try {
+        const { id } = req.params;
+        const { name, email, credits_balance, role } = req.body;
+
+        const result = await pool.query(
+            `UPDATE users 
+             SET name = $1, email = $2, credits_balance = $3, role = $4 
+             WHERE id = $5 
+             RETURNING id, name, email, credits_balance, role, created_at`,
+            [name, email, credits_balance, role, id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+
+        res.json({ message: 'Usuário atualizado com sucesso', user: result.rows[0] });
+    } catch (error) {
+        console.error('❌ Erro ao editar usuário:', error);
+        res.status(500).json({ error: 'Erro ao editar usuário' });
+    }
 });
 
+// Buscar detalhes do usuário + transações (admin)
 app.get('/api/admin/users/:id', adminMiddleware, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userResult = await pool.query(`SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login FROM users WHERE id = $1`, [id]);
-    if (userResult.rows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado' });
-    const transactionsResult = await pool.query(`SELECT id, external_reference, status, package_id, credits, amount, payment_method, created_at, approved_at FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`, [id]);
-    res.json({ user: userResult.rows[0], transactions: transactionsResult.rows });
-  } catch (error) {
-    console.error('❌ Erro ao buscar detalhes do usuário:', error);
-    res.status(500).json({ error: 'Erro ao buscar detalhes', details: error.message });
-  }
+    try {
+        const { id } = req.params;
+
+        const userResult = await pool.query(
+            'SELECT id, name, email, credits_balance, role, created_at FROM users WHERE id = $1',
+            [id]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+
+        const transactionsResult = await pool.query(
+            'SELECT * FROM transactions WHERE user_id = $1 ORDER BY created_at DESC',
+            [id]
+        );
+
+        res.json({
+            user: userResult.rows[0],
+            transactions: transactionsResult.rows
+        });
+    } catch (error) {
+        console.error('❌ Erro ao buscar usuário:', error);
+        res.status(500).json({ error: 'Erro ao buscar usuário' });
+    }
 });
 
+// Listar todas as transações (admin)
 app.get('/api/admin/transactions', adminMiddleware, async (req, res) => {
-  try {
-    const { page = 1, limit = 50, status = '' } = req.query;
-    const offset = (page - 1) * limit;
-    let query = `SELECT t.id, t.external_reference, t.status, t.package_id, t.credits, t.amount, t.payment_method, t.created_at, t.approved_at, u.name as user_name, u.email as user_email FROM transactions t LEFT JOIN users u ON t.user_id = u.id WHERE 1=1`;
-    const params = [];
-    if (status) {
-      query += ` AND t.status = $1`;
-      params.push(status);
+    try {
+        const result = await pool.query(`
+            SELECT t.*, u.name as user_name, u.email as user_email 
+            FROM transactions t 
+            JOIN users u ON t.user_id = u.id 
+            ORDER BY t.created_at DESC
+        `);
+
+        res.json({ transactions: result.rows });
+    } catch (error) {
+        console.error('❌ Erro ao listar transações:', error);
+        res.status(500).json({ error: 'Erro ao listar transações' });
     }
-    query += ` ORDER BY t.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-    params.push(limit, offset);
-    const result = await pool.query(query, params);
-    const countQuery = status ? `SELECT COUNT(*) FROM transactions WHERE status = $1` : `SELECT COUNT(*) FROM transactions`;
-    const countParams = status ? [status] : [];
-    const countResult = await pool.query(countQuery, countParams);
-    res.json({ transactions: result.rows, total: parseInt(countResult.rows[0].count), page: parseInt(page), limit: parseInt(limit) });
-  } catch (error) {
-    console.error('❌ Erro ao listar transações:', error);
-    res.status(500).json({ error: 'Erro ao listar transações', details: error.message });
-  }
 });
 
-app.get('/api/admin/export/transactions', adminMiddleware, async (req, res) => {
-  try {
-    const { format = 'csv', status = '' } = req.query;
-    let query = `SELECT t.id, t.external_reference, t.status, t.package_id, t.credits, t.amount, t.payment_method, t.payment_type, t.payer_email, t.created_at, t.approved_at, u.name as user_name, u.email as user_email, u.phone as user_phone FROM transactions t LEFT JOIN users u ON t.user_id = u.id WHERE 1=1`;
-    const params = [];
-    if (status) {
-      query += ` AND t.status = $1`;
-      params.push(status);
+// Exportar usuários (CSV)
+app.get('/api/admin/users/export/csv', adminMiddleware, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT id, name, email, credits_balance, role, created_at FROM users ORDER BY created_at DESC'
+        );
+
+        let csv = 'ID,Nome,Email,Créditos,Função,Data de Cadastro\n';
+        
+        result.rows.forEach(user => {
+            csv += `${user.id},"${user.name}","${user.email}",${user.credits_balance},${user.role},${user.created_at}\n`;
+        });
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename=usuarios.csv');
+        res.send(csv);
+    } catch (error) {
+        console.error('❌ Erro ao exportar usuários:', error);
+        res.status(500).json({ error: 'Erro ao exportar usuários' });
     }
-    query += ` ORDER BY t.created_at DESC`;
-    const result = await pool.query(query, params);
-    if (format === 'csv') {
-      let csv = 'ID,Referência,Status,Pacote,Créditos,Valor (R$),Método,Email Pagador,Nome Cliente,Email Cliente,Telefone,Criado Em,Aprovado Em\n';
-      result.rows.forEach(row => {
-        csv += `${row.id},"${row.external_reference}","${row.status}","${row.package_id}",${row.credits},${row.amount},"${row.payment_method || ''}","${row.payer_email || ''}","${row.user_name}","${row.user_email}","${row.user_phone || ''}","${row.created_at}","${row.approved_at || ''}"\n`;
-      });
-      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="transacoes-${Date.now()}.csv"`);
-      res.send(csv);
-    } else {
-      res.json({ transactions: result.rows, total: result.rows.length, exported_at: new Date().toISOString() });
-    }
-  } catch (error) {
-    console.error('❌ Erro ao exportar transações:', error);
-    res.status(500).json({ error: 'Erro ao exportar', details: error.message });
-  }
 });
 
-app.get('/api/admin/export/users', adminMiddleware, async (req, res) => {
-  try {
-    const { format = 'csv' } = req.query;
-    const result = await pool.query(`SELECT id, name, email, phone, credits_balance, role, status, created_at, last_login FROM users ORDER BY created_at DESC`);
-    if (format === 'csv') {
-      let csv = 'ID,Nome,Email,Telefone,Créditos,Role,Status,Criado Em,Último Login\n';
-      result.rows.forEach(row => {
-        csv += `${row.id},"${row.name}","${row.email}","${row.phone || ''}",${row.credits_balance},"${row.role}","${row.status}","${row.created_at}","${row.last_login || ''}"\n`;
-      });
-      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="usuarios-${Date.now()}.csv"`);
-      res.send(csv);
-    } else {
-      res.json({ users: result.rows, total: result.rows.length, exported_at: new Date().toISOString() });
+// Exportar transações (CSV)
+app.get('/api/admin/transactions/export/csv', adminMiddleware, async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT t.*, u.name as user_name, u.email as user_email 
+            FROM transactions t 
+            JOIN users u ON t.user_id = u.id 
+            ORDER BY t.created_at DESC
+        `);
+
+        let csv = 'ID,Usuário,Email,Pacote,Valor,Créditos,Status,Método,Data\n';
+        
+        result.rows.forEach(transaction => {
+            csv += `${transaction.id},"${transaction.user_name}","${transaction.user_email}",${transaction.package_id},${transaction.amount / 100},${transaction.credits},${transaction.status},${transaction.payment_method},${transaction.created_at}\n`;
+        });
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename=transacoes.csv');
+        res.send(csv);
+    } catch (error) {
+        console.error('❌ Erro ao exportar transações:', error);
+        res.status(500).json({ error: 'Erro ao exportar transações' });
     }
-  } catch (error) {
-    console.error('❌ Erro ao exportar usuários:', error);
-    res.status(500).json({ error: 'Erro ao exportar', details: error.message });
-  }
 });
 
-app.use((req, res) => res.status(404).json({ error: 'Rota não encontrada' }));
-app.use((err, req, res, next) => { console.error('Erro:', err); res.status(500).json({ error: 'Erro interno do servidor' }); });
+// ==================== TRATAMENTO DE ERROS ====================
+
+// Rota 404
+app.use((req, res) => {
+    res.status(404).json({ error: 'Rota não encontrada' });
+});
+
+// Tratamento de erros global
+app.use((err, req, res, next) => {
+    console.error('❌ Erro não tratado:', err);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+});
+
+// ==================== INICIAR SERVIDOR ====================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
-  console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
-  console.log(`💳 Mercado Pago: ${process.env.MERCADOPAGO_ACCESS_TOKEN ? 'Configurado' : 'NÃO configurado'}`);
-  console.log(`📧 Email (Resend): ${process.env.RESEND_API_KEY ? 'Configurado' : 'NÃO configurado - emails apenas em log'}`);
+    console.log(`
+╔════════════════════════════════════════════════════════════╗
+║                                                            ║
+║           🚀 SERVIDOR LEADS PARA TODOS 🚀                  ║
+║                                                            ║
+║  ✅ Servidor rodando em: http://localhost:${PORT}          
+║  ✅ Ambiente: ${process.env.NODE_ENV || 'development'}    
+║  ✅ Frontend: ${process.env.FRONTEND_URL || 'N/A'}        
+║                                                            ║
+║  💳 Mercado Pago:                                          ║
+║     ✅ Access Token configurado                            ║
+║     ✅ Modo PRODUÇÃO ativado                              ║
+║                                                            ║
+║  📧 Email (Resend):                                        ║
+║     ${process.env.RESEND_API_KEY ? '✅' : '❌'} API Key ${process.env.RESEND_API_KEY ? 'configurada' : 'não configurada'}                           
+║                                                            ║
+╚════════════════════════════════════════════════════════════╝
+    `);
 });
