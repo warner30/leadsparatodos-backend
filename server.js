@@ -404,41 +404,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
-const PACKAGES = {
-    // ✅ SISTEMA DE CUPONS DE DESCONTO
-const COUPONS = {
-    'TESTE99': {
-        code: 'TESTE99',
-        discount: 99, // 99% de desconto
-        type: 'percentage',
-        active: true,
-        description: 'Cupom de teste com 99% de desconto'
-    },
-    'BEMVINDO10': {
-        code: 'BEMVINDO10',
-        discount: 10,
-        type: 'percentage',
-        active: true,
-        description: 'Cupom de boas-vindas com 10% de desconto'
-    }
-};
-
-// Função para validar cupom
-function validateCoupon(couponCode) {
-    if (!couponCode) return null;
-    
-    const coupon = COUPONS[couponCode.toUpperCase()];
-    
-    if (!coupon || !coupon.active) {
-        return null;
-    }
-    
-    return coupon;
-}
-
-// Função para calcular desconto
-function calculateDiscount(originalPrice, coupon) {
-    if (!coupon) return 0;
+const PACKAGES = {;
     
     if (coupon.type === 'percentage') {
         return (originalPrice * coupon.discount) / 100;
