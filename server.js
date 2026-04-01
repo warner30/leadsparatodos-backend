@@ -236,6 +236,64 @@ const emailTemplates = {
 
 // ==================== ROTAS DE SAÚDE ====================
 
+// ENDPOINT TEMPORÁRIO PARA CORRIGIR BANCO DE DADOS
+app.get('/api/admin/fix-database-columns', async (req, res) => {
+    try {
+        console.log('🔧 Iniciando correção do banco de dados...');
+        
+        // Verificar se as colunas já existem
+        const checkColumns = await pool.query(`
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'transactions' 
+            AND column_name IN ('coupon_code', 'discount_amount')
+        `);
+        
+        const existingColumns = checkColumns.rows.map(row => row.column_name);
+        
+        let results = {
+            coupon_code: existingColumns.includes('coupon_code') ? 'já existe' : 'criada',
+            discount_amount: existingColumns.includes('discount_amount') ? 'já existe' : 'criada'
+        };
+        
+        // Adicionar coluna coupon_code se não existir
+        if (!existingColumns.includes('coupon_code')) {
+            await pool.query('ALTER TABLE transactions ADD COLUMN coupon_code VARCHAR(50)');
+            console.log('✅ Coluna coupon_code adicionada');
+        }
+        
+        // Adicionar coluna discount_amount se não existir
+        if (!existingColumns.includes('discount_amount')) {
+            await pool.query('ALTER TABLE transactions ADD COLUMN discount_amount INTEGER DEFAULT 0');
+            console.log('✅ Coluna discount_amount adicionada');
+        }
+        
+        // Verificar estrutura final
+        const finalStructure = await pool.query(`
+            SELECT column_name, data_type, character_maximum_length 
+            FROM information_schema.columns 
+            WHERE table_name = 'transactions' 
+            ORDER BY ordinal_position
+        `);
+        
+        console.log('✅ Banco de dados corrigido com sucesso!');
+        
+        res.json({
+            success: true,
+            message: 'Banco de dados corrigido com sucesso!',
+            results: results,
+            table_structure: finalStructure.rows
+        });
+    } catch (error) {
+        console.error('❌ Erro ao corrigir banco de dados:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            details: error.stack
+        });
+    }
+});
+
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'OK', 
