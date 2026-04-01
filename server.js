@@ -508,6 +508,22 @@ app.post('/api/payment/process-card', authMiddleware, async (req, res) => {
 
 // NOVO: Processar pagamento com Pix
 app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
+    app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
+    try {
+        console.log('💳 [PIX-DEBUG] Iniciando pagamento PIX...');
+        console.log('📦 [PIX-DEBUG] Body completo:', JSON.stringify(req.body, null, 2));
+        console.log('👤 [PIX-DEBUG] User ID:', req.userId);
+        
+        const { package_id, amount, credits, coupon, discount } = req.body;
+        
+        console.log('🔍 [PIX-DEBUG] Dados extraídos:', {
+            package_id,
+            amount,
+            credits,
+            coupon,
+            discount
+        });
+
   try {
     const { package_id } = req.body;
 
