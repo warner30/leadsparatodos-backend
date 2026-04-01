@@ -545,14 +545,36 @@ app.post('/api/payment/process-card', authMiddleware, async (req, res) => {
         
         const { package_id, payment_data, coupon, discount, final_price } = req.body;
 
-        // Buscar pacote
-        const selectedPackage = PACKAGES[package_id];
-        if (!selectedPackage) {
-            console.error('❌ [CARTÃO] Pacote não encontrado:', package_id);
-            return res.status(400).json({ error: 'Pacote não encontrado' });
+        // ✅ SUPORTE A PACOTES PERSONALIZADOS
+        let selectedPackage;
+        
+        if (package_id === 'package_custom' || package_id === 'personalizado') {
+            // Pacote personalizado - extrair dados do body
+            const customCredits = parseInt(req.body.credits) || 0;
+            const customPrice = parseFloat(final_price) || 0;
+            
+            if (customCredits < 1000) {
+                console.error('❌ [CARTÃO] Créditos insuficientes:', customCredits);
+                return res.status(400).json({ error: 'Mínimo de 1.000 créditos' });
+            }
+            
+            selectedPackage = {
+                id: 'package_custom',
+                name: `${customCredits.toLocaleString('pt-BR')} Créditos (Personalizado)`,
+                credits: customCredits,
+                price: Math.round(customPrice * 100) // Converter para centavos
+            };
+            
+            console.log('✅ [CARTÃO] Pacote PERSONALIZADO criado:', selectedPackage);
+        } else {
+            // Pacote fixo
+            selectedPackage = PACKAGES[package_id];
+            if (!selectedPackage) {
+                console.error('❌ [CARTÃO] Pacote não encontrado:', package_id);
+                return res.status(400).json({ error: 'Pacote não encontrado' });
+            }
+            console.log('✅ [CARTÃO] Pacote FIXO encontrado:', selectedPackage);
         }
-
-        console.log('✅ [CARTÃO] Pacote encontrado:', selectedPackage);
 
         // Buscar usuário
         const userResult = await pool.query(
@@ -591,7 +613,7 @@ app.post('/api/payment/process-card', authMiddleware, async (req, res) => {
         }
 
         // Se final_price foi fornecido (compra personalizada), usar ele
-        if (final_price !== undefined) {
+        if (final_price !== undefined && package_id === 'package_custom') {
             transactionAmount = Math.round(final_price * 100); // Converter para centavos
             console.log('💰 [CARTÃO] Usando preço personalizado:', transactionAmount / 100);
         }
@@ -766,14 +788,36 @@ app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
         
         const { package_id, amount, credits, coupon, discount } = req.body;
 
-        // Buscar pacote
-        const selectedPackage = PACKAGES[package_id];
-        if (!selectedPackage) {
-            console.error('❌ [PIX] Pacote não encontrado:', package_id);
-            return res.status(400).json({ error: 'Pacote não encontrado' });
+        // ✅ SUPORTE A PACOTES PERSONALIZADOS
+        let selectedPackage;
+        
+        if (package_id === 'package_custom' || package_id === 'personalizado') {
+            // Pacote personalizado
+            const customCredits = parseInt(credits) || 0;
+            const customPrice = parseFloat(amount) || 0;
+            
+            if (customCredits < 1000) {
+                console.error('❌ [PIX] Créditos insuficientes:', customCredits);
+                return res.status(400).json({ error: 'Mínimo de 1.000 créditos' });
+            }
+            
+            selectedPackage = {
+                id: 'package_custom',
+                name: `${customCredits.toLocaleString('pt-BR')} Créditos (Personalizado)`,
+                credits: customCredits,
+                price: Math.round(customPrice * 100) // Converter para centavos
+            };
+            
+            console.log('✅ [PIX] Pacote PERSONALIZADO criado:', selectedPackage);
+        } else {
+            // Pacote fixo
+            selectedPackage = PACKAGES[package_id];
+            if (!selectedPackage) {
+                console.error('❌ [PIX] Pacote não encontrado:', package_id);
+                return res.status(400).json({ error: 'Pacote não encontrado' });
+            }
+            console.log('✅ [PIX] Pacote FIXO encontrado:', selectedPackage);
         }
-
-        console.log('✅ [PIX] Pacote encontrado:', selectedPackage);
 
         // Buscar usuário
         const userResult = await pool.query(
@@ -812,7 +856,7 @@ app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
         }
 
         // Se amount foi fornecido (compra personalizada), usar ele
-        if (amount !== undefined) {
+        if (amount !== undefined && package_id === 'package_custom') {
             transactionAmount = Math.round(amount * 100); // Converter para centavos
             console.log('💰 [PIX] Usando valor personalizado:', transactionAmount / 100);
         }
@@ -831,7 +875,7 @@ app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
                 user.id,
                 package_id,
                 transactionAmount,
-                credits || selectedPackage.credits,
+                selectedPackage.credits,
                 'pending',
                 'pix',
                 externalReference,
@@ -853,7 +897,7 @@ app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
 
         const paymentPayload = {
             transaction_amount: transactionAmount / 100, // Converter centavos para reais
-            description: `${selectedPackage.name} - ${(credits || selectedPackage.credits).toLocaleString('pt-BR')} leads`,
+            description: `${selectedPackage.name} - ${selectedPackage.credits.toLocaleString('pt-BR')} leads`,
             payment_method_id: 'pix',
             payer: {
                 email: user.email,
@@ -867,7 +911,7 @@ app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
                 user_name: user.name,
                 user_email: user.email,
                 package_id: package_id,
-                credits: credits || selectedPackage.credits,
+                credits: selectedPackage.credits,
                 transaction_id: transactionId,
                 coupon: appliedCoupon ? appliedCoupon.code : null,
                 discount: discountAmount / 100
