@@ -1297,6 +1297,87 @@ app.get('/api/admin/transactions/export/csv', adminMiddleware, async (req, res) 
     }
 });
 
+// ==================== ENDPOINT TEMPORÁRIO PARA CORRIGIR BANCO ====================
+// ⚠️ REMOVER APÓS USO!
+app.get('/api/admin/fix-database-password-column', async (req, res) => {
+    try {
+        console.log('🔧 [FIX-DB] Iniciando correção do banco de dados...');
+        
+        // 1. Verificar se a coluna password existe
+        const checkColumn = await pool.query(`
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'users' AND column_name = 'password'
+        `);
+        
+        if (checkColumn.rows.length > 0) {
+            console.log('✅ [FIX-DB] Coluna password já existe!');
+            return res.json({
+                success: true,
+                message: 'Coluna password já existe',
+                status: 'already_exists'
+            });
+        }
+        
+        console.log('⚠️ [FIX-DB] Coluna password NÃO existe. Criando...');
+        
+        // 2. Adicionar coluna password
+        await pool.query(`
+            ALTER TABLE users 
+            ADD COLUMN password VARCHAR(255)
+        `);
+        
+        console.log('✅ [FIX-DB] Coluna password criada com sucesso!');
+        
+        // 3. Atualizar usuários existentes com senha padrão (hash de "123456")
+        const updateResult = await pool.query(`
+            UPDATE users 
+            SET password = '$2a$10$N9qo8uLOickgx2ZMRZoMye8RnJVMnMxXRZOvA3FZM/qYu3w5qN5Iu'
+            WHERE password IS NULL OR password = ''
+        `);
+        
+        console.log(`✅ [FIX-DB] ${updateResult.rowCount} usuários atualizados com senha padrão`);
+        
+        // 4. Verificar estrutura final
+        const finalStructure = await pool.query(`
+            SELECT column_name, data_type, character_maximum_length 
+            FROM information_schema.columns 
+            WHERE table_name = 'users' 
+            ORDER BY ordinal_position
+        `);
+        
+        console.log('✅ [FIX-DB] Estrutura final da tabela users:', finalStructure.rows);
+        
+        // 5. Listar usuários
+        const users = await pool.query(`
+            SELECT id, name, email, 
+                   CASE WHEN password IS NULL THEN 'NULL' 
+                        WHEN password = '' THEN 'VAZIO' 
+                        ELSE 'OK' END as senha_status,
+                   credits_balance, role, created_at 
+            FROM users
+        `);
+        
+        console.log('✅ [FIX-DB] Usuários no banco:', users.rows);
+        
+        res.json({
+            success: true,
+            message: 'Banco de dados corrigido com sucesso!',
+            users_updated: updateResult.rowCount,
+            table_structure: finalStructure.rows,
+            users: users.rows
+        });
+        
+    } catch (error) {
+        console.error('❌ [FIX-DB] Erro ao corrigir banco:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            details: error.stack
+        });
+    }
+});
+
 // ==================== TRATAMENTO DE ERROS ====================
 
 // Rota 404
