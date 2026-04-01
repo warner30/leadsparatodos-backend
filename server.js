@@ -404,19 +404,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
-const PACKAGES = {;
-    
-    if (coupon.type === 'percentage') {
-        return (originalPrice * coupon.discount) / 100;
-    }
-    
-    if (coupon.type === 'fixed') {
-        return Math.min(coupon.discount, originalPrice);
-    }
-    
-    return 0;
-}
-
+const PACKAGES = {
   basico: { id: 'basico', name: '5.000 Créditos', credits: 5000, price: 700, discount: 0 },
   popular: { id: 'popular', name: '10.000 Créditos', credits: 10000, price: 1300, discount: 7 },
   melhor: { id: 'melhor', name: '20.000 Créditos', credits: 20000, price: 2400, discount: 14 },
