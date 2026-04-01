@@ -819,12 +819,15 @@ app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
         }
 
         console.log('✅ [PIX] QR Code gerado com sucesso');
+        console.log('🔍 [PIX] QR Code Base64 length:', qrCodeData.qr_code_base64?.length);
+        console.log('🔍 [PIX] QR Code Text length:', qrCodeData.qr_code?.length);
 
         res.json({
             success: true,
             payment_id: payment.body.id,
             transaction_id: transactionId,
-            qr_code: qrCodeData.qr_code_base64,
+            qr_code_base64: qrCodeData.qr_code_base64,
+            qr_code: qrCodeData.qr_code,
             qr_code_text: qrCodeData.qr_code,
             amount: finalPrice / 100
         });
