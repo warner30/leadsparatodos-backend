@@ -405,6 +405,52 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 const PACKAGES = {
+    // ✅ SISTEMA DE CUPONS DE DESCONTO
+const COUPONS = {
+    'TESTE99': {
+        code: 'TESTE99',
+        discount: 99, // 99% de desconto
+        type: 'percentage',
+        active: true,
+        description: 'Cupom de teste com 99% de desconto'
+    },
+    'BEMVINDO10': {
+        code: 'BEMVINDO10',
+        discount: 10,
+        type: 'percentage',
+        active: true,
+        description: 'Cupom de boas-vindas com 10% de desconto'
+    }
+};
+
+// Função para validar cupom
+function validateCoupon(couponCode) {
+    if (!couponCode) return null;
+    
+    const coupon = COUPONS[couponCode.toUpperCase()];
+    
+    if (!coupon || !coupon.active) {
+        return null;
+    }
+    
+    return coupon;
+}
+
+// Função para calcular desconto
+function calculateDiscount(originalPrice, coupon) {
+    if (!coupon) return 0;
+    
+    if (coupon.type === 'percentage') {
+        return (originalPrice * coupon.discount) / 100;
+    }
+    
+    if (coupon.type === 'fixed') {
+        return Math.min(coupon.discount, originalPrice);
+    }
+    
+    return 0;
+}
+
   basico: { id: 'basico', name: '5.000 Créditos', credits: 5000, price: 700, discount: 0 },
   popular: { id: 'popular', name: '10.000 Créditos', credits: 10000, price: 1300, discount: 7 },
   melhor: { id: 'melhor', name: '20.000 Créditos', credits: 20000, price: 2400, discount: 14 },
