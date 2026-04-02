@@ -982,6 +982,113 @@ app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) =>
 });
 
 // ==================== INICIAR SERVIDOR ====================
+// ==================== DÉBITO MANUAL DE CRÉDITOS (ADMIN) ====================
+
+app.post('/api/admin/debit-credits', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { user_id, amount, reason } = req.body;
+        
+        console.log('💳 [ADMIN-DEBIT] Nova solicitação:', { user_id, amount, reason });
+        
+        // Validar dados
+        if (!user_id || !amount || !reason) {
+            return res.status(400).json({ error: 'Dados incompletos' });
+        }
+        
+        if (amount <= 0) {
+            return res.status(400).json({ error: 'Quantidade deve ser maior que zero' });
+        }
+        
+        // Buscar usuário
+        const userResult = await pool.query(
+            'SELECT id, name, email, credits_balance FROM users WHERE id = $1',
+            [user_id]
+        );
+        
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+        
+        const user = userResult.rows[0];
+        
+        // Verificar créditos suficientes
+        if (user.credits_balance < amount) {
+            return res.status(400).json({ 
+                error: 'Créditos insuficientes',
+                current_balance: user.credits_balance,
+                requested: amount
+            });
+        }
+        
+        // Debitar créditos
+        const newBalance = user.credits_balance - amount;
+        
+        await pool.query(
+            'UPDATE users SET credits_balance = $1 WHERE id = $2',
+            [newBalance, user_id]
+        );
+        
+        console.log(`✅ [ADMIN-DEBIT] Débito realizado`);
+        console.log(`   Usuário: ${user.name} (${user.email})`);
+        console.log(`   Saldo anterior: ${user.credits_balance}`);
+        console.log(`   Debitado: ${amount}`);
+        console.log(`   Novo saldo: ${newBalance}`);
+        console.log(`   Motivo: ${reason}`);
+        
+        res.json({
+            success: true,
+            message: 'Créditos debitados com sucesso',
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email
+            },
+            previous_balance: user.credits_balance,
+            debited_amount: amount,
+            new_balance: newBalance,
+            reason: reason
+        });
+        
+    } catch (error) {
+        console.error('❌ [ADMIN-DEBIT] Erro:', error);
+        res.status(500).json({ error: 'Erro ao debitar créditos' });
+    }
+});
+
+// Registrar solicitação simples (histórico apenas - opcional)
+app.post('/api/leads-requests/simple', authMiddleware, async (req, res) => {
+    try {
+        const { credits_requested, filters, whatsapp_message } = req.body;
+        
+        console.log('📝 [LEADS-REQUEST-SIMPLE] Registrando histórico:', { 
+            userId: req.userId, 
+            credits: credits_requested 
+        });
+        
+        // Apenas registrar no histórico, NÃO RESERVAR CRÉDITOS
+        const requestResult = await pool.query(`
+            INSERT INTO leads_requests 
+            (user_id, credits_requested, status, filters, whatsapp_message, created_at) 
+            VALUES ($1, $2, 'pending_manual', $3, $4, NOW()) 
+            RETURNING *
+        `, [req.userId, credits_requested, JSON.stringify(filters), whatsapp_message]);
+        
+        const request = requestResult.rows[0];
+        
+        console.log('✅ [LEADS-REQUEST-SIMPLE] Histórico registrado:', request.id);
+        
+        res.json({
+            success: true,
+            request: request
+        });
+        
+    } catch (error) {
+        console.error('❌ [LEADS-REQUEST-SIMPLE] Erro:', error);
+        // Não retorna erro, apenas registra
+        res.json({ success: true, request: null });
+    }
+});
+
 
 app.listen(PORT, () => {
     console.log('\n╔═══════════════════════════════════════════════════════╗');
