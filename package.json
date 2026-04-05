@@ -2,33 +2,25 @@
   "name": "leadsparatodos-backend",
   "version": "1.0.0",
   "description": "Backend para plataforma de geração de leads",
-  "main": "src/server.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
-    "migrate": "node scripts/migrate.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
-  "keywords": [
-    "leads",
-    "mercadopago",
-    "backend"
-  ],
-  "author": "Leads para Todos",
+  "keywords": ["leads", "mercadopago", "backend"],
+  "author": "",
   "license": "ISC",
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "helmet": "^7.1.0",
     "morgan": "^1.10.0",
-    "dotenv": "^16.3.1",
+    "pg": "^8.11.3",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.11.3",
-    "uuid": "^9.0.1",
-    "axios": "^1.6.2",
-    "stripe": "^14.10.0",
-    "nodemailer": "^6.9.7",
-    "express-rate-limit": "^7.1.5"
+    "mercadopago": "^1.5.17",
+    "dotenv": "^16.3.1",
+    "resend": "^3.2.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
