@@ -1,1588 +1,519 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-const { Pool } = require('pg');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const mercadopago = require('mercadopago');
-const crypto = require('crypto');
-const { Resend } = require('resend');
-
-const app = express();
-const PORT = process.env.PORT || 10000;
-
-// ==================== CONFIGURAÇÕES ====================
-
-// Mercado Pago
-mercadopago.configure({
-    access_token: process.env.MERCADOPAGO_ACCESS_TOKEN
-});
-console.log('✅ Mercado Pago configurado com Access Token de PRODUÇÃO');
-
-// PostgreSQL
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || process.env.DATABASE_PRIVATE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
-
-pool.connect()
-    .then(() => console.log('✅ PostgreSQL conectado com sucesso'))
-    .catch(err => console.error('❌ Erro ao conectar PostgreSQL:', err));
-
-// Resend Email
-const resend = new Resend(process.env.RESEND_API_KEY);
-console.log('✅ Email Resend configurado');
-
-// ==================== DEFINIÇÃO DE PACOTES E CUPONS ====================
-
-const PACKAGES = {
-    package_5k: {
-        id: 'package_5k',
-        name: '5.000 Créditos',
-        credits: 5000,
-        price: 70000, // R$ 700,00 em centavos
-        pricePerLead: 0.14
-    },
-    package_10k: {
-        id: 'package_10k',
-        name: '10.000 Créditos',
-        credits: 10000,
-        price: 130000, // R$ 1.300,00 em centavos
-        pricePerLead: 0.13
-    },
-    package_20k: {
-        id: 'package_20k',
-        name: '20.000 Créditos',
-        credits: 20000,
-        price: 240000, // R$ 2.400,00 em centavos
-        pricePerLead: 0.12
-    },
-    package_50k: {
-        id: 'package_50k',
-        name: '50.000 Créditos',
-        credits: 50000,
-        price: 550000, // R$ 5.500,00 em centavos
-        pricePerLead: 0.11
-    }
-};
-
-// Sistema de cupons
-const COUPONS = {
-    TESTE99: {
-        code: 'TESTE99',
-        discount: 99,
-        type: 'percentage',
-        active: true,
-        description: 'Cupom de teste com 99% de desconto'
-    },
-    BEMVINDO10: {
-        code: 'BEMVINDO10',
-        discount: 10,
-        type: 'percentage',
-        active: true,
-        description: 'Cupom de boas-vindas com 10% de desconto'
-    }
-};
-
-function validateCoupon(code) {
-    if (!code) return null;
-    const coupon = COUPONS[code.toUpperCase()];
-    return (coupon && coupon.active) ? coupon : null;
-}
-
-function calculateDiscount(price, coupon) {
-    if (!coupon) return 0;
-    if (coupon.type === 'percentage') {
-        return Math.round((price * coupon.discount) / 100);
-    }
-    if (coupon.type === 'fixed') {
-        return Math.min(coupon.discount, price);
-    }
-    return 0;
-}
-
-// ==================== MIDDLEWARES ====================
-
-app.use(helmet());
-app.use(morgan('dev'));
-app.use(cors({
-    origin: [
-        'https://jkvzqvlk.gensparkspace.com',
-        'http://localhost:3000',
-        'http://localhost:5500'
-    ],
-    credentials: true
-}));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Middleware de autenticação
-const authMiddleware = async (req, res, next) => {
-    try {
-        const token = req.headers.authorization?.replace('Bearer ', '');
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Painel Admin - Leads para Todos</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: #f8fafc; }
         
-        if (!token) {
-            return res.status(401).json({ error: 'Token não fornecido' });
-        }
-
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret-key-default');
-        req.userId = decoded.userId;
-        next();
-    } catch (error) {
-        console.error('❌ Erro na autenticação:', error);
-        res.status(401).json({ error: 'Token inválido' });
-    }
-};
-
-// Middleware de admin
-const adminMiddleware = async (req, res, next) => {
-    try {
-        const userResult = await pool.query('SELECT role FROM users WHERE id = $1', [req.userId]);
+        /* Header */
+        .admin-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px 40px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .header-content { max-width: 1400px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; }
+        .header-title { font-size: 24px; font-weight: 700; }
+        .header-title i { margin-right: 10px; }
+        .header-actions { display: flex; gap: 20px; align-items: center; }
+        .btn-logout { background: rgba(255,255,255,0.2); color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s; }
+        .btn-logout:hover { background: rgba(255,255,255,0.3); }
         
-        if (userResult.rows.length === 0 || userResult.rows[0].role !== 'admin') {
-            return res.status(403).json({ error: 'Acesso negado' });
-        }
+        /* Container */
+        .admin-container { max-width: 1400px; margin: 40px auto; padding: 0 40px; }
         
-        next();
-    } catch (error) {
-        console.error('❌ Erro no middleware admin:', error);
-        res.status(500).json({ error: 'Erro ao verificar permissões' });
-    }
-};
-
-// ==================== FUNÇÃO DE ENVIO DE EMAIL ====================
-
-async function sendEmail(to, subject, htmlContent) {
-    try {
-        if (!process.env.RESEND_API_KEY) {
-            console.log('⚠️ Resend API Key não configurada');
-            return { success: false, error: 'API Key não configurada' };
-        }
-
-        const data = await resend.emails.send({
-            from: 'Leads Para Todos <noreply@leadsparatodos.com>',
-            to: [to],
-            subject: subject,
-            html: htmlContent
-        });
-
-        console.log('✅ Email enviado com sucesso para:', to);
-        return { success: true, data };
-    } catch (error) {
-        console.error('❌ Erro ao enviar email:', error);
-        return { success: false, error: error.message };
-    }
-}
-
-// Templates de email
-const emailTemplates = {
-    welcome: (name) => `
-        <!DOCTYPE html>
-        <html>
-        <head><meta charset="UTF-8"></head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h2 style="color: #1e40af;">Bem-vindo ao Leads Para Todos!</h2>
-                <p>Olá <strong>${name}</strong>,</p>
-                <p>Sua conta foi criada com sucesso! Agora você pode começar a gerar leads de qualidade para seu negócio.</p>
-                <p>Acesse sua conta em: <a href="https://jkvzqvlk.gensparkspace.com/dashboard.html">Dashboard</a></p>
-                <p>Se precisar de ajuda, estamos à disposição.</p>
-                <p>Atenciosamente,<br>Equipe Leads Para Todos</p>
+        /* Tabs */
+        .tabs { display: flex; gap: 10px; margin-bottom: 30px; border-bottom: 2px solid #e2e8f0; }
+        .tab { padding: 15px 30px; background: none; border: none; font-size: 16px; font-weight: 600; color: #64748b; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.3s; }
+        .tab.active { color: #7c3aed; border-bottom-color: #7c3aed; }
+        .tab:hover { color: #7c3aed; }
+        
+        /* Tab Content */
+        .tab-content { display: none; }
+        .tab-content.active { display: block; animation: fadeIn 0.3s; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Stats Cards */
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: white; border-radius: 16px; padding: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid; }
+        .stat-card.purple { border-left-color: #7c3aed; }
+        .stat-card.blue { border-left-color: #3b82f6; }
+        .stat-card.green { border-left-color: #10b981; }
+        .stat-card.orange { border-left-color: #f97316; }
+        .stat-label { font-size: 14px; color: #64748b; margin-bottom: 10px; }
+        .stat-value { font-size: 32px; font-weight: 700; color: #1e293b; }
+        .stat-icon { float: right; font-size: 24px; opacity: 0.3; }
+        
+        /* Table */
+        .table-container { background: white; border-radius: 16px; padding: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .table-title { font-size: 20px; font-weight: 700; color: #1e293b; }
+        .search-box { display: flex; gap: 10px; }
+        .search-box input { padding: 10px 15px; border: 2px solid #e2e8f0; border-radius: 8px; width: 300px; font-size: 14px; }
+        .search-box button { padding: 10px 20px; background: #7c3aed; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; }
+        .search-box button:hover { background: #6d28d9; }
+        
+        table { width: 100%; border-collapse: collapse; }
+        thead { background: #f8fafc; }
+        th { padding: 15px; text-align: left; font-size: 14px; font-weight: 600; color: #64748b; border-bottom: 2px solid #e2e8f0; }
+        td { padding: 15px; border-bottom: 1px solid #f1f5f9; }
+        tr:hover { background: #fafafa; }
+        
+        .badge { padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+        .badge.success { background: #d1fae5; color: #065f46; }
+        .badge.pending { background: #fef3c7; color: #92400e; }
+        .badge.failed { background: #fee2e2; color: #991b1b; }
+        .badge.admin { background: #ede9fe; color: #5b21b6; }
+        .badge.user { background: #e0f2fe; color: #075985; }
+        
+        .btn-action { padding: 8px 15px; background: #f1f5f9; color: #64748b; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; margin-right: 5px; }
+        .btn-action:hover { background: #e2e8f0; }
+        .btn-action.primary { background: #7c3aed; color: white; }
+        .btn-action.primary:hover { background: #6d28d9; }
+        
+        /* Loading */
+        .loading { text-align: center; padding: 40px; color: #64748b; }
+        .spinner { width: 40px; height: 40px; border: 4px solid #f1f5f9; border-top-color: #7c3aed; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 15px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        /* Modal */
+        .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 9999; align-items: center; justify-content: center; }
+        .modal.show { display: flex; }
+        .modal-content { background: white; border-radius: 16px; padding: 30px; max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .modal-title { font-size: 20px; font-weight: 700; }
+        .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #64748b; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; font-weight: 600; color: #1e293b; }
+        .form-group input, .form-group select { width: 100%; padding: 12px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; }
+        .btn-submit { width: 100%; padding: 15px; background: #7c3aed; color: white; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
+        .btn-submit:hover { background: #6d28d9; }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="admin-header">
+        <div class="header-content">
+            <div class="header-title">
+                <i class="fas fa-shield-alt"></i>
+                Painel Administrativo
             </div>
-        </body>
-        </html>
-    `,
-    paymentApproved: (name, credits, package_name) => `
-        <!DOCTYPE html>
-        <html>
-        <head><meta charset="UTF-8"></head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h2 style="color: #10b981;">✅ Pagamento Aprovado!</h2>
-                <p>Olá <strong>${name}</strong>,</p>
-                <p>Seu pagamento foi aprovado com sucesso!</p>
-                <div style="background: #f3f4f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                    <p><strong>Pacote:</strong> ${package_name}</p>
-                    <p><strong>Créditos adicionados:</strong> ${credits.toLocaleString('pt-BR')}</p>
+            <div class="header-actions">
+                <span id="admin-name">Admin</span>
+                <button class="btn-logout" onclick="logout()">
+                    <i class="fas fa-sign-out-alt"></i> Sair
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Container -->
+    <div class="admin-container">
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" data-tab="dashboard">
+                <i class="fas fa-chart-line"></i> Dashboard
+            </button>
+            <button class="tab" data-tab="users">
+                <i class="fas fa-users"></i> Usuários
+            </button>
+            <button class="tab" data-tab="transactions">
+                <i class="fas fa-credit-card"></i> Transações
+            </button>
+        </div>
+
+        <!-- Tab: Dashboard -->
+        <div class="tab-content active" id="tab-dashboard">
+            <div class="stats-grid">
+                <div class="stat-card purple">
+                    <div class="stat-icon"><i class="fas fa-dollar-sign"></i></div>
+                    <div class="stat-label">Total de Vendas</div>
+                    <div class="stat-value" id="stat-sales">R$ 0,00</div>
                 </div>
-                <p>Os créditos já estão disponíveis em sua conta!</p>
-                <p><a href="https://jkvzqvlk.gensparkspace.com/dashboard.html" style="background: #1e40af; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">Acessar Dashboard</a></p>
-                <p>Atenciosamente,<br>Equipe Leads Para Todos</p>
+                <div class="stat-card blue">
+                    <div class="stat-icon"><i class="fas fa-users"></i></div>
+                    <div class="stat-label">Total de Usuários</div>
+                    <div class="stat-value" id="stat-users">0</div>
+                </div>
+                <div class="stat-card orange">
+                    <div class="stat-icon"><i class="fas fa-coins"></i></div>
+                    <div class="stat-label">Créditos Vendidos</div>
+                    <div class="stat-value" id="stat-credits">0</div>
+                </div>
             </div>
-        </body>
-        </html>
-    `,
-    resetPassword: (name, resetUrl) => `
-        <!DOCTYPE html>
-        <html>
-        <head><meta charset="UTF-8"></head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h2 style="color: #1e40af;">Recuperação de Senha</h2>
-                <p>Olá <strong>${name}</strong>,</p>
-                <p>Recebemos uma solicitação para redefinir sua senha.</p>
-                <p>Clique no botão abaixo para criar uma nova senha:</p>
-                <p><a href="${resetUrl}" style="background: #1e40af; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">Redefinir Senha</a></p>
-                <p>Este link é válido por 1 hora.</p>
-                <p>Se você não solicitou esta alteração, ignore este email.</p>
-                <p>Atenciosamente,<br>Equipe Leads Para Todos</p>
+
+            <div class="table-container">
+                <div class="table-header">
+                    <div class="table-title">📊 Vendas por Dia (Últimos 30 dias)</div>
+                </div>
+                <div id="sales-chart">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Carregando vendas...
+                    </div>
+                </div>
             </div>
-        </body>
-        </html>
-    `
-};
+        </div>
 
-// ==================== ROTAS DE SAÚDE ====================
+        <!-- Tab: Users -->
+        <div class="tab-content" id="tab-users">
+            <div class="table-container">
+                <div class="table-header">
+                    <div class="table-title">👥 Gerenciar Usuários</div>
+                    <div class="search-box">
+                        <input type="text" id="search-users" placeholder="Buscar por nome ou email...">
+                        <button onclick="loadUsers(document.getElementById('search-users').value)">
+                            <i class="fas fa-search"></i> Buscar
+                        </button>
+                    </div>
+                </div>
+                <div id="users-table">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Carregando usuários...
+                    </div>
+                </div>
+            </div>
+        </div>
 
-// ENDPOINT TEMPORÁRIO PARA CORRIGIR BANCO DE DADOS
-app.get('/api/admin/fix-database-columns', async (req, res) => {
-    try {
-        console.log('🔧 Iniciando correção do banco de dados...');
-        
-        // Verificar se as colunas já existem
-        const checkColumns = await pool.query(`
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = 'transactions' 
-            AND column_name IN ('coupon_code', 'discount_amount')
-        `);
-        
-        const existingColumns = checkColumns.rows.map(row => row.column_name);
-        
-        let results = {
-            coupon_code: existingColumns.includes('coupon_code') ? 'já existe' : 'criada',
-            discount_amount: existingColumns.includes('discount_amount') ? 'já existe' : 'criada'
-        };
-        
-        // Adicionar coluna coupon_code se não existir
-        if (!existingColumns.includes('coupon_code')) {
-            await pool.query('ALTER TABLE transactions ADD COLUMN coupon_code VARCHAR(50)');
-            console.log('✅ Coluna coupon_code adicionada');
-        }
-        
-        // Adicionar coluna discount_amount se não existir
-        if (!existingColumns.includes('discount_amount')) {
-            await pool.query('ALTER TABLE transactions ADD COLUMN discount_amount INTEGER DEFAULT 0');
-            console.log('✅ Coluna discount_amount adicionada');
-        }
-        
-        // Verificar estrutura final
-        const finalStructure = await pool.query(`
-            SELECT column_name, data_type, character_maximum_length 
-            FROM information_schema.columns 
-            WHERE table_name = 'transactions' 
-            ORDER BY ordinal_position
-        `);
-        
-        console.log('✅ Banco de dados corrigido com sucesso!');
-        
-        res.json({
-            success: true,
-            message: 'Banco de dados corrigido com sucesso!',
-            results: results,
-            table_structure: finalStructure.rows
-        });
-    } catch (error) {
-        console.error('❌ Erro ao corrigir banco de dados:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            details: error.stack
-        });
-    }
-});
+        <!-- Tab: Transactions -->
+        <div class="tab-content" id="tab-transactions">
+            <div class="table-container">
+                <div class="table-header">
+                    <div class="table-title">💳 Transações</div>
+                    <div class="search-box">
+                        <select id="filter-status" onchange="loadTransactions(this.value)">
+                            <option value="">Todos os status</option>
+                            <option value="approved">Aprovadas</option>
+                            <option value="pending">Pendentes</option>
+                            <option value="failed">Falhas</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="transactions-table">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Carregando transações...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
-// ENDPOINT PARA CRIAR TABELA DE SOLICITAÇÕES DE LEADS
-app.get('/api/admin/setup-leads-requests', async (req, res) => {
-    try {
-        console.log('🔧 Criando tabela leads_requests...');
-        
-        // Verificar se a tabela já existe
-        const tableExists = await pool.query(`
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_name = 'leads_requests'
-            );
-        `);
-        
-        if (tableExists.rows[0].exists) {
-            return res.json({
-                success: true,
-                message: 'Tabela leads_requests já existe',
-                status: 'already_exists'
-            });
-        }
-        
-        // Criar tabela leads_requests
-        await pool.query(`
-            CREATE TABLE leads_requests (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER NOT NULL REFERENCES users(id),
-                credits_requested INTEGER NOT NULL,
-                status VARCHAR(20) DEFAULT 'pending',
-                filters JSONB,
-                whatsapp_message TEXT,
-                created_at TIMESTAMP DEFAULT NOW(),
-                confirmed_at TIMESTAMP,
-                cancelled_at TIMESTAMP,
-                expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '24 hours',
-                admin_notes TEXT
-            );
-        `);
-        
-        console.log('✅ Tabela leads_requests criada');
-        
-        // Adicionar coluna credits_reserved na tabela users
-        const checkUserColumn = await pool.query(`
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = 'users' AND column_name = 'credits_reserved'
-        `);
-        
-        if (checkUserColumn.rows.length === 0) {
-            await pool.query(`
-                ALTER TABLE users ADD COLUMN credits_reserved INTEGER DEFAULT 0;
-            `);
-            console.log('✅ Coluna credits_reserved adicionada na tabela users');
-        }
-        
-        // Criar índices
-        await pool.query(`
-            CREATE INDEX idx_leads_requests_user_id ON leads_requests(user_id);
-            CREATE INDEX idx_leads_requests_status ON leads_requests(status);
-            CREATE INDEX idx_leads_requests_expires_at ON leads_requests(expires_at);
-        `);
-        
-        console.log('✅ Índices criados');
-        
-        res.json({
-            success: true,
-            message: 'Tabela leads_requests criada com sucesso!',
-            status: 'created'
-        });
-    } catch (error) {
-        console.error('❌ Erro ao criar tabela:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            details: error.stack
-        });
-    }
-});
+    <!-- Modal: Edit User -->
+    <div class="modal" id="edit-user-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title">✏️ Editar Usuário</div>
+                <button class="modal-close" onclick="closeModal('edit-user-modal')">×</button>
+            </div>
+            <form id="edit-user-form">
+                <input type="hidden" id="edit-user-id">
+                
+                <div class="form-group">
+                    <label>Nome</label>
+                    <input type="text" id="edit-user-name" readonly>
+                </div>
+                
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="edit-user-email" readonly>
+                </div>
+                
+                <div class="form-group">
+                    <label>Créditos</label>
+                    <input type="number" id="edit-user-credits" required>
+                </div>
+                
+                <div class="form-group">
+                    <label>Tipo</label>
+                    <select id="edit-user-role">
+                        <option value="user">Usuário</option>
+                        <option value="admin">Admin</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Status</label>
+                    <select id="edit-user-status">
+                        <option value="active">Ativo</option>
+                        <option value="inactive">Inativo</option>
+                        <option value="blocked">Bloqueado</option>
+                    </select>
+                </div>
+                
+                <button type="submit" class="btn-submit">
+                    <i class="fas fa-save"></i> Salvar Alterações
+                </button>
+            </form>
+        </div>
+    </div>
 
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
-        timestamp: new Date().toISOString(),
-        environment: process.env.NODE_ENV || 'development'
-    });
-});
-
-app.get('/api/test-db', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT NOW()');
-        res.json({ 
-            success: true, 
-            message: 'Conexão com banco de dados OK',
-            timestamp: result.rows[0].now 
-        });
-    } catch (error) {
-        console.error('❌ Erro ao testar DB:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Erro ao conectar com banco de dados' 
-        });
-    }
-});
-
-// ENDPOINT TEMPORÁRIO PARA VERIFICAR CRÉDITOS
-app.get('/api/admin/check-credits/:email', async (req, res) => {
-    try {
-        const { email } = req.params;
-        const result = await pool.query(
-            'SELECT id, name, email, credits_balance, created_at, updated_at FROM users WHERE email = $1',
-            [email]
-        );
-        
-        if (result.rows.length === 0) {
-            return res.json({ success: false, message: 'Usuário não encontrado' });
-        }
-        
-        res.json({
-            success: true,
-            user: result.rows[0]
-        });
-    } catch (error) {
-        console.error('❌ Erro ao verificar créditos:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
-        });
-    }
-});
-
-// ==================== ROTAS DE AUTENTICAÇÃO ====================
-
-// Registro
-app.post('/api/auth/register', async (req, res) => {
-    try {
-        const { name, email, password } = req.body;
-
-        console.log('📝 Tentativa de registro:', { name, email });
-
-        if (!name || !email || !password) {
-            return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
+    <!-- Scripts -->
+    <script src="js/api-config.js"></script>
+    <script>
+        // Verificar autenticação
+        if (!isAuthenticated()) {
+            window.location.href = '/login.html';
         }
 
-        // Verificar se usuário já existe
-        const userExists = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
-        if (userExists.rows.length > 0) {
-            return res.status(400).json({ error: 'Email já cadastrado' });
-        }
-
-        // Hash da senha
-        const password_hash = await bcrypt.hash(password, 10);
-
-        // Inserir usuário
-        const result = await pool.query(
-            'INSERT INTO users (name, email, password_hash, credits_balance, role, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, credits_balance, role',
-            [name, email, password_hash, 0, 'user', 'active']
-        );
-
-        const user = result.rows[0];
-
-        // Enviar email de boas-vindas
-        await sendEmail(
-            email,
-            'Bem-vindo ao Leads Para Todos!',
-            emailTemplates.welcome(name)
-        );
-
-        console.log('✅ Usuário registrado com sucesso:', user.id);
-
-        res.status(201).json({
-            message: 'Usuário criado com sucesso',
-            user: {
-                id: user.id,
-                name: user.name,
-                email: user.email,
-                credits_balance: user.credits_balance,
-                role: user.role
-            }
-        });
-    } catch (error) {
-        console.error('❌ Erro no registro:', error);
-        res.status(500).json({ error: 'Erro ao registrar usuário' });
-    }
-});
-
-// Login
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-
-        console.log('🔐 Tentativa de login:', email);
-
-        if (!email || !password) {
-            return res.status(400).json({ error: 'Email e senha são obrigatórios' });
-        }
-
-        // Buscar usuário
-        const result = await pool.query(
-            'SELECT id, name, email, password_hash, credits_balance, role, status FROM users WHERE email = $1',
-            [email]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(401).json({ error: 'Email ou senha incorretos' });
-        }
-
-        const user = result.rows[0];
-
-        // Verificar senha
-        const validPassword = await bcrypt.compare(password, user.password_hash);
-        if (!validPassword) {
-            return res.status(401).json({ error: 'Email ou senha incorretos' });
-        }
-
-        // Verificar status da conta
-        if (user.status !== 'active') {
-            return res.status(403).json({ error: 'Conta inativa' });
-        }
-
-        // Gerar token JWT
-        const token = jwt.sign(
-            { userId: user.id, email: user.email },
-            process.env.JWT_SECRET || 'secret-key-default',
-            { expiresIn: '7d' }
-        );
-
-        console.log('✅ Login realizado com sucesso:', user.id);
-
-        res.json({
-            token,
-            user: {
-                id: user.id,
-                name: user.name,
-                email: user.email,
-                credits_balance: user.credits_balance,
-                role: user.role
-            }
-        });
-    } catch (error) {
-        console.error('❌ Erro no login:', error);
-        res.status(500).json({ error: 'Erro ao fazer login' });
-    }
-});
-
-// Perfil do usuário
-app.get('/api/auth/profile', authMiddleware, async (req, res) => {
-    try {
-        const result = await pool.query(
-            'SELECT id, name, email, credits_balance, role, status, created_at FROM users WHERE id = $1',
-            [req.userId]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Usuário não encontrado' });
-        }
-
-        res.json({ user: result.rows[0] });
-    } catch (error) {
-        console.error('❌ Erro ao buscar perfil:', error);
-        res.status(500).json({ error: 'Erro ao buscar perfil' });
-    }
-});
-
-// Esqueci minha senha
-app.post('/api/auth/forgot-password', async (req, res) => {
-    try {
-        const { email } = req.body;
-
-        console.log('🔑 Solicitação de recuperação de senha:', email);
-
-        const result = await pool.query('SELECT id, name, email FROM users WHERE email = $1', [email]);
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Email não encontrado' });
-        }
-
-        const user = result.rows[0];
-        const resetToken = crypto.randomBytes(32).toString('hex');
-        const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hora
-
-        await pool.query(
-            'UPDATE users SET reset_token = $1, reset_token_expiry = $2 WHERE id = $3',
-            [resetToken, resetTokenExpiry, user.id]
-        );
-
-        const resetUrl = `https://jkvzqvlk.gensparkspace.com/reset-password.html?token=${resetToken}`;
-
-        await sendEmail(
-            email,
-            'Recuperação de Senha - Leads Para Todos',
-            emailTemplates.resetPassword(user.name, resetUrl)
-        );
-
-        console.log('✅ Email de recuperação enviado para:', email);
-
-        res.json({ message: 'Email de recuperação enviado com sucesso' });
-    } catch (error) {
-        console.error('❌ Erro na recuperação de senha:', error);
-        res.status(500).json({ error: 'Erro ao processar recuperação de senha' });
-    }
-});
-
-// Resetar senha
-app.post('/api/auth/reset-password', async (req, res) => {
-    try {
-        const { token, newPassword } = req.body;
-
-        console.log('🔄 Tentativa de reset de senha');
-
-        const result = await pool.query(
-            'SELECT id FROM users WHERE reset_token = $1 AND reset_token_expiry > NOW()',
-            [token]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(400).json({ error: 'Token inválido ou expirado' });
-        }
-
-        const userId = result.rows[0].id;
-        const password_hash = await bcrypt.hash(newPassword, 10);
-
-        await pool.query(
-            'UPDATE users SET password_hash = $1, reset_token = NULL, reset_token_expiry = NULL WHERE id = $2',
-            [password_hash, userId]
-        );
-
-        console.log('✅ Senha resetada com sucesso para usuário:', userId);
-
-        res.json({ message: 'Senha alterada com sucesso' });
-    } catch (error) {
-        console.error('❌ Erro ao resetar senha:', error);
-        res.status(500).json({ error: 'Erro ao resetar senha' });
-    }
-});
-
-// ==================== ROTAS DE PAGAMENTO ====================
-
-// Processar pagamento com CARTÃO
-app.post('/api/payment/process-card', authMiddleware, async (req, res) => {
-    try {
-        console.log('💳 [CARTÃO] Recebendo pagamento via CARTÃO...');
-        console.log('📦 [CARTÃO] Body completo:', JSON.stringify(req.body, null, 2));
-
-        const { package_id, payment_data, coupon, discount, final_price } = req.body;
-
-        // Validar dados obrigatórios
-        if (!package_id || !payment_data) {
-            console.log('❌ [CARTÃO] Dados obrigatórios faltando');
-            return res.status(400).json({ error: 'Dados de pagamento incompletos' });
-        }
-
-        // Buscar pacote ou criar pacote personalizado
-        let selectedPackage;
-        
-        if (package_id === 'personalizado' || package_id === 'package_custom') {
-            // Pacote personalizado
-            const { credits, amount } = req.body;
-            if (!credits || credits < 1000) {
-                return res.status(400).json({ error: 'Quantidade mínima de créditos é 1.000' });
-            }
-            
-            // O amount do frontend já vem em centavos
-            let priceInCents = amount || (credits * 14);
-            
-            // Se o amount veio como número decimal (reais), converter para centavos
-            if (amount && amount < 100 && credits >= 1000) {
-                priceInCents = Math.round(amount * 100);
-            }
-            
-            selectedPackage = {
-                id: 'package_custom',
-                name: `${credits.toLocaleString('pt-BR')} Créditos (Personalizado)`,
-                credits: credits,
-                price: priceInCents // Preço em centavos
-            };
-            console.log('✅ [CARTÃO] Pacote PERSONALIZADO criado:', selectedPackage);
-        } else {
-            // Pacote fixo
-            selectedPackage = PACKAGES[package_id];
-            if (!selectedPackage) {
-                console.log('❌ [CARTÃO] Pacote não encontrado:', package_id);
-                return res.status(400).json({ error: 'Pacote inválido' });
-            }
-            console.log('✅ [CARTÃO] Pacote FIXO encontrado:', selectedPackage);
-        }
-
-        // Buscar dados do usuário
-        const userResult = await pool.query(
-            'SELECT id, name, email FROM users WHERE id = $1',
-            [req.userId]
-        );
-
-        if (userResult.rows.length === 0) {
-            console.log('❌ [CARTÃO] Usuário não encontrado:', req.userId);
-            return res.status(404).json({ error: 'Usuário não encontrado' });
-        }
-
-        const user = userResult.rows[0];
-        console.log('✅ [CARTÃO] Usuário encontrado:', user);
-
-        // Aplicar cupom se fornecido
-        let finalPrice = selectedPackage.price;
-        let discountAmount = 0;
-        let appliedCoupon = null;
-
-        if (coupon) {
-            appliedCoupon = validateCoupon(coupon);
-            if (appliedCoupon) {
-                discountAmount = calculateDiscount(selectedPackage.price, appliedCoupon);
-                finalPrice = selectedPackage.price - discountAmount;
-                console.log(`✅ [CARTÃO] Cupom aplicado: ${coupon} - ${appliedCoupon.discount}%`);
-                console.log(`💰 [CARTÃO] Preço original: R$ ${(selectedPackage.price / 100).toFixed(2)}`);
-                console.log(`💰 [CARTÃO] Desconto: R$ ${(discountAmount / 100).toFixed(2)}`);
-                console.log(`💰 [CARTÃO] Preço final: R$ ${(finalPrice / 100).toFixed(2)}`);
-            }
-        }
-
-        // Criar registro de transação
-        const transactionResult = await pool.query(
-            `INSERT INTO transactions 
-            (user_id, package_id, amount, status, payment_method, credits, coupon_code, discount_amount) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
-            RETURNING id`,
-            [
-                user.id,
-                selectedPackage.id,
-                finalPrice,
-                'pending',
-                'credit_card',
-                selectedPackage.credits,
-                appliedCoupon?.code || null,
-                discountAmount
-            ]
-        );
-
-        const transactionId = transactionResult.rows[0].id;
-        console.log('✅ [CARTÃO] Transação criada:', transactionId);
-
-        // Preparar payload para Mercado Pago
-        const paymentPayload = {
-            transaction_amount: finalPrice / 100, // Converter centavos para reais
-            token: payment_data.token,
-            description: selectedPackage.name,
-            installments: payment_data.installments || 1,
-            payment_method_id: payment_data.payment_method_id,
-            payer: {
-                email: user.email,
-                identification: {
-                    type: payment_data.payer?.identification?.type || 'CPF',
-                    number: payment_data.payer?.identification?.number || '00000000000'
-                }
-            },
-            notification_url: `${process.env.BACKEND_URL}/api/webhook/mercadopago`,
-            external_reference: transactionId.toString()
-        };
-
-        console.log('🚀 [CARTÃO] Enviando pagamento para Mercado Pago...');
-        console.log('📤 [CARTÃO] Payload:', JSON.stringify(paymentPayload, null, 2));
-
-        // Criar pagamento no Mercado Pago
-        const payment = await mercadopago.payment.create(paymentPayload);
-
-        console.log('📥 [CARTÃO] Resposta Mercado Pago:', JSON.stringify(payment.body, null, 2));
-
-        // Atualizar transação com payment_id
-        await pool.query(
-            'UPDATE transactions SET payment_id = $1, status = $2 WHERE id = $3',
-            [payment.body.id, payment.body.status, transactionId]
-        );
-
-        // Se pagamento aprovado, adicionar créditos
-        if (payment.body.status === 'approved') {
-            console.log('✅ [CARTÃO] Pagamento APROVADO! Adicionando créditos...');
-            
-            await pool.query(
-                'UPDATE users SET credits_balance = credits_balance + $1 WHERE id = $2',
-                [selectedPackage.credits, user.id]
-            );
-
-            await pool.query(
-                'UPDATE transactions SET status = $1 WHERE id = $2',
-                ['approved', transactionId]
-            );
-
-            // Enviar email de confirmação
-            await sendEmail(
-                user.email,
-                'Pagamento Aprovado - Leads Para Todos',
-                emailTemplates.paymentApproved(user.name, selectedPackage.credits, selectedPackage.name)
-            );
-
-            console.log(`✅ [CARTÃO] Créditos adicionados! Novo saldo: ${selectedPackage.credits}`);
-        }
-
-        res.json({
-            success: true,
-            status: payment.body.status,
-            payment_id: payment.body.id,
-            transaction_id: transactionId
-        });
-
-    } catch (error) {
-        console.error('❌ [CARTÃO] Erro ao processar pagamento:', error);
-        res.status(500).json({ 
-            error: 'Erro ao processar pagamento',
-            details: error.message 
-        });
-    }
-});
-
-// Processar pagamento com PIX
-app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
-    try {
-        console.log('💳 [PIX] Recebendo pagamento via PIX...');
-        console.log('📦 [PIX] Body completo:', JSON.stringify(req.body, null, 2));
-
-        const { package_id, amount, credits, coupon, discount } = req.body;
-
-        // Validar dados obrigatórios
-        if (!package_id) {
-            console.log('❌ [PIX] package_id não fornecido');
-            return res.status(400).json({ error: 'Pacote não especificado' });
-        }
-
-        // Buscar pacote ou criar pacote personalizado
-        let selectedPackage;
-        
-        if (package_id === 'personalizado' || package_id === 'package_custom') {
-            // Pacote personalizado
-            if (!credits || credits < 1000) {
-                return res.status(400).json({ error: 'Quantidade mínima de créditos é 1.000' });
-            }
-            
-            // O amount do frontend já vem em centavos
-            let priceInCents = amount || (credits * 14);
-            
-            // Se o amount veio como número decimal (reais), converter para centavos
-            if (amount && amount < 100 && credits >= 1000) {
-                priceInCents = Math.round(amount * 100);
-            }
-            
-            selectedPackage = {
-                id: 'package_custom',
-                name: `${credits.toLocaleString('pt-BR')} Créditos (Personalizado)`,
-                credits: credits,
-                price: priceInCents // Preço em centavos
-            };
-            console.log('✅ [PIX] Pacote PERSONALIZADO criado:', selectedPackage);
-        } else {
-            // Pacote fixo
-            selectedPackage = PACKAGES[package_id];
-            if (!selectedPackage) {
-                console.log('❌ [PIX] Pacote não encontrado:', package_id);
-                console.log('📋 [PIX] Pacotes disponíveis:', Object.keys(PACKAGES));
-                return res.status(400).json({ error: 'Pacote inválido' });
-            }
-            console.log('✅ [PIX] Pacote FIXO encontrado:', selectedPackage);
-        }
-
-        // Buscar dados do usuário
-        const userResult = await pool.query(
-            'SELECT id, name, email FROM users WHERE id = $1',
-            [req.userId]
-        );
-
-        if (userResult.rows.length === 0) {
-            console.log('❌ [PIX] Usuário não encontrado:', req.userId);
-            return res.status(404).json({ error: 'Usuário não encontrado' });
-        }
-
-        const user = userResult.rows[0];
-        console.log('✅ [PIX] Usuário encontrado:', { id: user.id, name: user.name, email: user.email });
-
-        // Aplicar cupom se fornecido
-        let finalPrice = selectedPackage.price;
-        let discountAmount = 0;
-        let appliedCoupon = null;
-
-        if (coupon) {
-            appliedCoupon = validateCoupon(coupon);
-            if (appliedCoupon) {
-                discountAmount = calculateDiscount(selectedPackage.price, appliedCoupon);
-                finalPrice = selectedPackage.price - discountAmount;
-                console.log(`✅ [PIX] Cupom aplicado: ${coupon} - ${appliedCoupon.discount}%`);
-                console.log(`💰 [PIX] Preço original: R$ ${(selectedPackage.price / 100).toFixed(2)}`);
-                console.log(`💰 [PIX] Desconto: R$ ${(discountAmount / 100).toFixed(2)}`);
-                console.log(`💰 [PIX] Preço final: R$ ${(finalPrice / 100).toFixed(2)}`);
-            }
-        }
-
-        // Criar registro de transação
-        const transactionResult = await pool.query(
-            `INSERT INTO transactions 
-            (user_id, package_id, amount, status, payment_method, credits, coupon_code, discount_amount) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
-            RETURNING id`,
-            [
-                user.id,
-                selectedPackage.id,
-                finalPrice,
-                'pending',
-                'pix',
-                selectedPackage.credits,
-                appliedCoupon?.code || null,
-                discountAmount
-            ]
-        );
-
-        const transactionId = transactionResult.rows[0].id;
-        console.log('✅ [PIX] Transação criada:', transactionId);
-
-        // Preparar payload para Mercado Pago PIX
-        const pixPayload = {
-            transaction_amount: finalPrice / 100, // Converter centavos para reais
-            description: selectedPackage.name,
-            payment_method_id: 'pix',
-            payer: {
-                email: user.email,
-                first_name: user.name.split(' ')[0],
-                last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0]
-            },
-            notification_url: `${process.env.BACKEND_URL}/api/webhook/mercadopago`,
-            external_reference: transactionId.toString()
-        };
-
-        console.log('🚀 [PIX] Enviando pagamento PIX para Mercado Pago...');
-        console.log('📤 [PIX] Payload:', JSON.stringify(pixPayload, null, 2));
-
-        // Criar pagamento PIX no Mercado Pago
-        const payment = await mercadopago.payment.create(pixPayload);
-
-        console.log('📥 [PIX] Resposta Mercado Pago:', JSON.stringify(payment.body, null, 2));
-
-        // Atualizar transação com payment_id
-        await pool.query(
-            'UPDATE transactions SET payment_id = $1, status = $2 WHERE id = $3',
-            [payment.body.id, payment.body.status, transactionId]
-        );
-
-        // Extrair dados do QR Code
-        const qrCodeData = payment.body.point_of_interaction?.transaction_data;
-        
-        if (!qrCodeData || !qrCodeData.qr_code_base64) {
-            console.error('❌ [PIX] QR Code não gerado pelo Mercado Pago');
-            return res.status(500).json({ error: 'Erro ao gerar QR Code' });
-        }
-
-        console.log('✅ [PIX] QR Code gerado com sucesso');
-        console.log('🔍 [PIX] QR Code Base64 length:', qrCodeData.qr_code_base64?.length);
-        console.log('🔍 [PIX] QR Code Text length:', qrCodeData.qr_code?.length);
-
-        res.json({
-            success: true,
-            payment_id: payment.body.id,
-            transaction_id: transactionId,
-            qr_code_base64: qrCodeData.qr_code_base64,
-            qr_code: qrCodeData.qr_code,
-            qr_code_text: qrCodeData.qr_code,
-            amount: finalPrice / 100
-        });
-
-    } catch (error) {
-        console.error('❌ [PIX] Erro ao processar pagamento:', error);
-        res.status(500).json({ 
-            error: 'Erro ao processar pagamento PIX',
-            details: error.message 
-        });
-    }
-});
-
-// Webhook do Mercado Pago
-app.post('/api/webhook/mercadopago', async (req, res) => {
-    try {
-        console.log('🔔 [WEBHOOK] Notificação recebida do Mercado Pago');
-        console.log('📦 [WEBHOOK] Body:', JSON.stringify(req.body, null, 2));
-
-        const { type, data } = req.body;
-
-        // Responder imediatamente ao Mercado Pago
-        res.sendStatus(200);
-
-        if (type === 'payment') {
-            const paymentId = data.id;
-            console.log('💳 [WEBHOOK] Processando pagamento:', paymentId);
-
-            // Buscar informações do pagamento no Mercado Pago
-            const payment = await mercadopago.payment.get(paymentId);
-            console.log('📥 [WEBHOOK] Status do pagamento:', payment.body.status);
-
-            if (payment.body.status === 'approved') {
-                console.log('✅ [WEBHOOK] Pagamento APROVADO! Adicionando créditos...');
-
-                const externalReference = payment.body.external_reference;
-
-                // Buscar transação
-                const transactionResult = await pool.query(
-                    'SELECT t.id, t.user_id, t.credits, t.status, u.name, u.email FROM transactions t JOIN users u ON t.user_id = u.id WHERE t.id = $1',
-                    [externalReference]
-                );
-
-                if (transactionResult.rows.length === 0) {
-                    console.error('❌ [WEBHOOK] Transação não encontrada:', externalReference);
+        // Variáveis globais
+        let currentTab = 'dashboard';
+
+        // Carregar dados do admin
+        async function loadAdminData() {
+            try {
+                const response = await fetch(`${API_CONFIG.BASE_URL}/api/auth/profile`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('authToken')}` }
+                });
+                const data = await response.json();
+                
+                if (data.user.role !== 'admin') {
+                    alert('Acesso negado! Apenas administradores podem acessar esta página.');
+                    window.location.href = '/dashboard.html';
                     return;
                 }
-
-                const transaction = transactionResult.rows[0];
-
-                // Verificar se já foi processado
-                if (transaction.status === 'approved') {
-                    console.log('⚠️ [WEBHOOK] Pagamento já processado anteriormente');
-                    return;
-                }
-
-                // Adicionar créditos
-                await pool.query(
-                    'UPDATE users SET credits_balance = credits_balance + $1 WHERE id = $2',
-                    [transaction.credits, transaction.user_id]
-                );
-
-                // Atualizar status da transação
-                await pool.query(
-                    'UPDATE transactions SET status = $1 WHERE id = $2',
-                    ['approved', transaction.id]
-                );
-
-                // Enviar email de confirmação
-                await sendEmail(
-                    transaction.email,
-                    'Pagamento Aprovado - Leads Para Todos',
-                    emailTemplates.paymentApproved(
-                        transaction.name,
-                        transaction.credits,
-                        `${transaction.credits.toLocaleString('pt-BR')} Créditos`
-                    )
-                );
-
-                console.log(`✅ [WEBHOOK] Créditos adicionados! Usuário: ${transaction.user_id}, Créditos: ${transaction.credits}`);
+                
+                document.getElementById('admin-name').textContent = data.user.name;
+            } catch (error) {
+                console.error('Erro ao carregar dados do admin:', error);
+                alert('Erro ao carregar perfil');
             }
         }
-    } catch (error) {
-        console.error('❌ [WEBHOOK] Erro ao processar webhook:', error);
-    }
-});
 
-// Verificar status de pagamento
-app.get('/api/payment/status/:payment_id', authMiddleware, async (req, res) => {
-    try {
-        const { payment_id } = req.params;
-
-        const payment = await mercadopago.payment.get(payment_id);
-
-        res.json({
-            status: payment.body.status,
-            status_detail: payment.body.status_detail
-        });
-    } catch (error) {
-        console.error('❌ Erro ao verificar status do pagamento:', error);
-        res.status(500).json({ error: 'Erro ao verificar status do pagamento' });
-    }
-});
-
-// Listar transações do usuário
-app.get('/api/transactions', authMiddleware, async (req, res) => {
-    try {
-        const result = await pool.query(
-            'SELECT id, package_id, amount, status, payment_method, credits, created_at FROM transactions WHERE user_id = $1 ORDER BY created_at DESC',
-            [req.userId]
-        );
-
-        res.json({ transactions: result.rows });
-    } catch (error) {
-        console.error('❌ Erro ao buscar transações:', error);
-        res.status(500).json({ error: 'Erro ao buscar transações' });
-    }
-});
-
-// ==================== ROTAS DE SOLICITAÇÕES DE LEADS ====================
-
-// Criar solicitação de leads (reservar créditos)
-app.post('/api/leads-requests', authMiddleware, async (req, res) => {
-    try {
-        const { credits_requested, filters, whatsapp_message } = req.body;
-        
-        console.log('📝 [LEADS-REQUEST] Nova solicitação:', { userId: req.userId, credits: credits_requested });
-        
-        // Validar créditos solicitados
-        if (!credits_requested || credits_requested < 1000) {
-            return res.status(400).json({ error: 'Quantidade mínima é 1.000 créditos' });
-        }
-        
-        // Buscar dados do usuário
-        const userResult = await pool.query(
-            'SELECT id, name, email, credits_balance, credits_reserved FROM users WHERE id = $1',
-            [req.userId]
-        );
-        
-        if (userResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Usuário não encontrado' });
-        }
-        
-        const user = userResult.rows[0];
-        const creditsReserved = user.credits_reserved || 0;
-        const creditsAvailable = user.credits_balance - creditsReserved;
-        
-        console.log('💰 [LEADS-REQUEST] Créditos disponíveis:', creditsAvailable);
-        
-        // Verificar se tem créditos suficientes
-        if (creditsAvailable < credits_requested) {
-            return res.status(400).json({ 
-                error: 'Créditos insuficientes',
-                available: creditsAvailable,
-                requested: credits_requested
+        // Tabs
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                
+                // Atualizar tabs ativos
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                
+                tab.classList.add('active');
+                document.getElementById(`tab-${tabName}`).classList.add('active');
+                
+                currentTab = tabName;
+                
+                // Carregar dados da tab
+                if (tabName === 'dashboard') loadDashboard();
+                if (tabName === 'users') loadUsers();
+                if (tabName === 'transactions') loadTransactions();
             });
-        }
-        
-        // Criar solicitação
-        const requestResult = await pool.query(`
-            INSERT INTO leads_requests 
-            (user_id, credits_requested, status, filters, whatsapp_message, created_at, expires_at) 
-            VALUES ($1, $2, $3, $4, $5, NOW(), NOW() + INTERVAL '24 hours') 
-            RETURNING *
-        `, [user.id, credits_requested, 'pending', JSON.stringify(filters), whatsapp_message]);
-        
-        const request = requestResult.rows[0];
-        
-        // Atualizar créditos reservados do usuário
-        await pool.query(
-            'UPDATE users SET credits_reserved = credits_reserved + $1 WHERE id = $2',
-            [credits_requested, user.id]
-        );
-        
-        console.log('✅ [LEADS-REQUEST] Solicitação criada:', request.id);
-        console.log('🔒 [LEADS-REQUEST] Créditos reservados:', credits_requested);
-        
-        res.json({
-            success: true,
-            request: request,
-            credits_remaining: creditsAvailable - credits_requested
         });
-        
-    } catch (error) {
-        console.error('❌ [LEADS-REQUEST] Erro:', error);
-        res.status(500).json({ error: 'Erro ao criar solicitação' });
-    }
-});
 
-// Listar solicitações do usuário
-app.get('/api/leads-requests', authMiddleware, async (req, res) => {
-    try {
-        const result = await pool.query(`
-            SELECT * FROM leads_requests 
-            WHERE user_id = $1 
-            ORDER BY created_at DESC
-        `, [req.userId]);
-        
-        res.json({ requests: result.rows });
-    } catch (error) {
-        console.error('❌ Erro ao buscar solicitações:', error);
-        res.status(500).json({ error: 'Erro ao buscar solicitações' });
-    }
-});
+        // Carregar Dashboard
+        async function loadDashboard() {
+            try {
+                const response = await fetch(`${API_CONFIG.BASE_URL}/api/admin/dashboard`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('authToken')}` }
+                });
+                
+                const data = await response.json();
+                
+                // Total de Vendas (em reais)
+                const totalSales = data.totalSales || 0;
+                document.getElementById('stat-sales').textContent = `R$ ${totalSales.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                
+                // Total de Usuários
+                const totalUsers = data.totalUsers || 0;
+                document.getElementById('stat-users').textContent = totalUsers.toLocaleString('pt-BR');
+                
+                // Total de Créditos Vendidos
+                const totalCredits = data.totalCreditsSold || 0;
+                document.getElementById('stat-credits').textContent = totalCredits.toLocaleString('pt-BR');
+                
+                // Vendas por dia (se existir)
+                if (data.salesByDay && data.salesByDay.length > 0) {
+                    let chartHTML = '<table><thead><tr><th>Data</th><th>Receita</th></tr></thead><tbody>';
+                    data.salesByDay.forEach(day => {
+                        const date = new Date(day.date).toLocaleDateString('pt-BR');
+                        const revenue = day.revenue || 0;
+                        chartHTML += `<tr>
+                            <td>${date}</td>
+                            <td>R$ ${revenue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        </tr>`;
+                    });
+                    chartHTML += '</tbody></table>';
+                    document.getElementById('sales-chart').innerHTML = chartHTML;
+                }
+            } catch (error) {
+                console.error('Erro ao carregar dashboard:', error);
+                alert('Erro ao carregar dados do dashboard');
+            }
+        }
 
-// Cancelar solicitação (cliente)
-app.post('/api/leads-requests/:id/cancel', authMiddleware, async (req, res) => {
-    try {
-        const { id } = req.params;
-        
-        // Buscar solicitação
-        const requestResult = await pool.query(
-            'SELECT * FROM leads_requests WHERE id = $1 AND user_id = $2',
-            [id, req.userId]
-        );
-        
-        if (requestResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Solicitação não encontrada' });
+        // Carregar Usuários
+        async function loadUsers(search = '') {
+            try {
+                const url = `${API_CONFIG.BASE_URL}/api/admin/users?search=${search}`;
+                const response = await fetch(url, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('authToken')}` }
+                });
+                
+                const data = await response.json();
+                
+                let html = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Nome</th>
+                                <th>Email</th>
+                                <th>Créditos</th>
+                                <th>Tipo</th>
+                                <th>Status</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+                
+                data.users.forEach(user => {
+                    const roleClass = user.role === 'admin' ? 'admin' : 'user';
+                    html += `<tr>
+                        <td>${user.id}</td>
+                        <td>${user.name}</td>
+                        <td>${user.email}</td>
+                        <td>${user.credits_balance.toLocaleString('pt-BR')}</td>
+                        <td><span class="badge ${roleClass}">${user.role}</span></td>
+                        <td><span class="badge ${user.status === 'active' ? 'success' : 'pending'}">${user.status}</span></td>
+                        <td>
+                            <button class="btn-action primary" onclick="editUser(${user.id})">
+                                <i class="fas fa-edit"></i> Editar
+                            </button>
+                        </td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></table>';
+                document.getElementById('users-table').innerHTML = html;
+            } catch (error) {
+                console.error('Erro:', error);
+            }
         }
-        
-        const request = requestResult.rows[0];
-        
-        if (request.status !== 'pending') {
-            return res.status(400).json({ error: 'Solicitação já foi processada' });
-        }
-        
-        // Liberar créditos reservados
-        await pool.query(
-            'UPDATE users SET credits_reserved = credits_reserved - $1 WHERE id = $2',
-            [request.credits_requested, req.userId]
-        );
-        
-        // Marcar como cancelada
-        await pool.query(
-            'UPDATE leads_requests SET status = $1, cancelled_at = NOW() WHERE id = $2',
-            ['cancelled', id]
-        );
-        
-        console.log('🚫 [LEADS-REQUEST] Solicitação cancelada:', id);
-        
-        res.json({ success: true, message: 'Solicitação cancelada com sucesso' });
-    } catch (error) {
-        console.error('❌ Erro ao cancelar solicitação:', error);
-        res.status(500).json({ error: 'Erro ao cancelar solicitação' });
-    }
-});
 
-// ==================== ROTAS ADMIN - GERENCIAR SOLICITAÇÕES ====================
+        // Carregar Transações
+        async function loadTransactions(status = '') {
+            try {
+                const url = `${API_CONFIG.BASE_URL}/api/admin/transactions?status=${status}`;
+                const response = await fetch(url, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('authToken')}` }
+                });
+                
+                const data = await response.json();
+                
+                let html = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Usuário</th>
+                                <th>Pacote</th>
+                                <th>Créditos</th>
+                                <th>Valor</th>
+                                <th>Método</th>
+                                <th>Status</th>
+                                <th>Data</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+                
+                data.transactions.forEach(transaction => {
+                    const statusClass = transaction.status === 'approved' ? 'success' : 
+                                       transaction.status === 'pending' ? 'pending' : 'failed';
+                    const amount = (transaction.amount / 100).toFixed(2).replace('.', ',');
+                    const date = new Date(transaction.created_at).toLocaleDateString('pt-BR');
+                    
+                    html += `<tr>
+                        <td>${transaction.id}</td>
+                        <td>${transaction.user_name}</td>
+                        <td>${transaction.package_id}</td>
+                        <td>${transaction.credits.toLocaleString('pt-BR')}</td>
+                        <td>R$ ${amount}</td>
+                        <td>${transaction.payment_method}</td>
+                        <td><span class="badge ${statusClass}">${transaction.status}</span></td>
+                        <td>${date}</td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></table>';
+                document.getElementById('transactions-table').innerHTML = html;
+            } catch (error) {
+                console.error('Erro:', error);
+            }
+        }
 
-// Listar todas as solicitações (admin)
-app.get('/api/admin/leads-requests', authMiddleware, adminMiddleware, async (req, res) => {
-    try {
-        const { status } = req.query;
-        
-        let query = `
-            SELECT 
-                lr.*,
-                u.name as user_name,
-                u.email as user_email,
-                u.credits_balance
-            FROM leads_requests lr
-            JOIN users u ON lr.user_id = u.id
-        `;
-        
-        const params = [];
-        
-        if (status) {
-            query += ' WHERE lr.status = $1';
-            params.push(status);
+        // Editar Usuário
+        async function editUser(userId) {
+            try {
+                const response = await fetch(`${API_CONFIG.BASE_URL}/api/admin/users/${userId}`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('authToken')}` }
+                });
+                const data = await response.json();
+                
+                document.getElementById('edit-user-id').value = data.user.id;
+                document.getElementById('edit-user-name').value = data.user.name;
+                document.getElementById('edit-user-email').value = data.user.email;
+                document.getElementById('edit-user-credits').value = data.user.credits_balance;
+                document.getElementById('edit-user-role').value = data.user.role;
+                document.getElementById('edit-user-status').value = data.user.status;
+                
+                document.getElementById('edit-user-modal').classList.add('show');
+            } catch (error) {
+                console.error('Erro:', error);
+                alert('Erro ao carregar dados do usuário');
+            }
         }
-        
-        query += ' ORDER BY lr.created_at DESC';
-        
-        const result = await pool.query(query, params);
-        
-        res.json({ requests: result.rows });
-    } catch (error) {
-        console.error('❌ Erro ao buscar solicitações admin:', error);
-        res.status(500).json({ error: 'Erro ao buscar solicitações' });
-    }
-});
 
-// Confirmar entrega (admin)
-app.post('/api/admin/leads-requests/:id/confirm', authMiddleware, adminMiddleware, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { admin_notes } = req.body;
-        
-        // Buscar solicitação
-        const requestResult = await pool.query(
-            'SELECT * FROM leads_requests WHERE id = $1',
-            [id]
-        );
-        
-        if (requestResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Solicitação não encontrada' });
-        }
-        
-        const request = requestResult.rows[0];
-        
-        if (request.status !== 'pending') {
-            return res.status(400).json({ error: 'Solicitação já foi processada' });
-        }
-        
-        // Debitar créditos do usuário
-        await pool.query(`
-            UPDATE users 
-            SET 
-                credits_balance = credits_balance - $1,
-                credits_reserved = credits_reserved - $1
-            WHERE id = $2
-        `, [request.credits_requested, request.user_id]);
-        
-        // Marcar como confirmada
-        await pool.query(`
-            UPDATE leads_requests 
-            SET 
-                status = $1, 
-                confirmed_at = NOW(),
-                admin_notes = $2
-            WHERE id = $3
-        `, ['confirmed', admin_notes, id]);
-        
-        console.log('✅ [LEADS-REQUEST-ADMIN] Entrega confirmada:', id);
-        console.log('💰 [LEADS-REQUEST-ADMIN] Créditos debitados:', request.credits_requested);
-        
-        res.json({ success: true, message: 'Entrega confirmada com sucesso' });
-    } catch (error) {
-        console.error('❌ Erro ao confirmar entrega:', error);
-        res.status(500).json({ error: 'Erro ao confirmar entrega' });
-    }
-});
-
-// Cancelar solicitação (admin)
-app.post('/api/admin/leads-requests/:id/cancel', authMiddleware, adminMiddleware, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { admin_notes } = req.body;
-        
-        // Buscar solicitação
-        const requestResult = await pool.query(
-            'SELECT * FROM leads_requests WHERE id = $1',
-            [id]
-        );
-        
-        if (requestResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Solicitação não encontrada' });
-        }
-        
-        const request = requestResult.rows[0];
-        
-        if (request.status !== 'pending') {
-            return res.status(400).json({ error: 'Solicitação já foi processada' });
-        }
-        
-        // Liberar créditos reservados
-        await pool.query(
-            'UPDATE users SET credits_reserved = credits_reserved - $1 WHERE id = $2',
-            [request.credits_requested, request.user_id]
-        );
-        
-        // Marcar como cancelada
-        await pool.query(`
-            UPDATE leads_requests 
-            SET 
-                status = $1, 
-                cancelled_at = NOW(),
-                admin_notes = $2
-            WHERE id = $3
-        `, ['cancelled', admin_notes, id]);
-        
-        console.log('🚫 [LEADS-REQUEST-ADMIN] Solicitação cancelada:', id);
-        
-        res.json({ success: true, message: 'Solicitação cancelada com sucesso' });
-    } catch (error) {
-        console.error('❌ Erro ao cancelar solicitação (admin):', error);
-        res.status(500).json({ error: 'Erro ao cancelar solicitação' });
-    }
-});
-
-// Job para liberar créditos expirados (executar a cada hora)
-app.get('/api/cron/expire-requests', async (req, res) => {
-    try {
-        console.log('⏰ [CRON] Verificando solicitações expiradas...');
-        
-        // Buscar solicitações pendentes e expiradas
-        const expiredResult = await pool.query(`
-            SELECT * FROM leads_requests 
-            WHERE status = 'pending' 
-            AND expires_at < NOW()
-        `);
-        
-        const expired = expiredResult.rows;
-        
-        if (expired.length === 0) {
-            console.log('✅ [CRON] Nenhuma solicitação expirada');
-            return res.json({ success: true, expired_count: 0 });
-        }
-        
-        console.log(`⚠️ [CRON] ${expired.length} solicitações expiradas encontradas`);
-        
-        // Processar cada uma
-        for (const request of expired) {
-            // Liberar créditos
-            await pool.query(
-                'UPDATE users SET credits_reserved = credits_reserved - $1 WHERE id = $2',
-                [request.credits_requested, request.user_id]
-            );
+        // Salvar Edição de Usuário
+        document.getElementById('edit-user-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
             
-            // Marcar como expirada
-            await pool.query(
-                'UPDATE leads_requests SET status = $1, cancelled_at = NOW() WHERE id = $2',
-                ['expired', request.id]
-            );
+            const userId = document.getElementById('edit-user-id').value;
+            const credits_balance = parseInt(document.getElementById('edit-user-credits').value);
+            const role = document.getElementById('edit-user-role').value;
+            const status = document.getElementById('edit-user-status').value;
             
-            console.log(`🔓 [CRON] Créditos liberados: ${request.credits_requested} (Request ID: ${request.id})`);
-        }
-        
-        console.log(`✅ [CRON] ${expired.length} solicitações expiradas processadas`);
-        
-        res.json({ 
-            success: true, 
-            expired_count: expired.length,
-            requests: expired.map(r => ({ id: r.id, credits: r.credits_requested }))
+            try {
+                const response = await fetch(`${API_CONFIG.BASE_URL}/api/admin/users/${userId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+                    },
+                    body: JSON.stringify({ credits_balance, role, status })
+                });
+                
+                if (response.ok) {
+                    alert('Usuário atualizado com sucesso!');
+                    closeModal('edit-user-modal');
+                    loadUsers();
+                } else {
+                    alert('Erro ao atualizar usuário');
+                }
+            } catch (error) {
+                console.error('Erro:', error);
+                alert('Erro ao atualizar usuário');
+            }
         });
-    } catch (error) {
-        console.error('❌ [CRON] Erro ao processar expirações:', error);
-        res.status(500).json({ error: 'Erro ao processar expirações' });
-    }
-});
 
-// ==================== ROTAS ADMIN ====================
-
-// Dashboard admin
-app.get('/api/admin/dashboard', authMiddleware, adminMiddleware, async (req, res) => {
-    try {
-        // Total de usuários
-        const usersCount = await pool.query('SELECT COUNT(*) FROM users');
-        
-        // Total de transações
-        const transactionsCount = await pool.query('SELECT COUNT(*) FROM credit_transactions WHERE type = $1', ['credit']);
-        
-        // Total de créditos vendidos
-        const creditsResult = await pool.query('SELECT SUM(amount) FROM credit_transactions WHERE type = $1', ['credit']);
-        
-        // Total de vendas (14% do valor dos créditos)
-        const totalCredits = parseInt(creditsResult.rows[0].sum || 0);
-        const totalSales = (totalCredits * 0.14);
-        
-        // Vendas por dia nos últimos 30 dias
-        const salesByDayResult = await pool.query(`
-            SELECT 
-                DATE(created_at) as date,
-                SUM(amount) as credits
-            FROM credit_transactions
-            WHERE type = 'credit'
-            AND created_at >= NOW() - INTERVAL '30 days'
-            GROUP BY DATE(created_at)
-            ORDER BY date DESC
-        `);
-
-        const salesByDay = salesByDayResult.rows.map(row => ({
-            date: row.date,
-            revenue: (parseInt(row.credits) * 0.14)
-        }));
-
-        res.json({
-            totalUsers: parseInt(usersCount.rows[0].count),
-            totalTransactions: parseInt(transactionsCount.rows[0].count),
-            totalCreditsSold: totalCredits,
-            totalSales: totalSales,
-            salesByDay: salesByDay
-        });
-    } catch (error) {
-        console.error('❌ Erro ao buscar dados do dashboard:', error);
-        res.status(500).json({ error: 'Erro ao buscar dados do dashboard' });
-    }
-});
-
-// Listar usuários (admin)
-app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
-    try {
-        const { search } = req.query;
-        
-        let query = 'SELECT id, name, email, phone, credits_balance, role, status, created_at FROM users';
-        const params = [];
-        
-        if (search) {
-            query += ' WHERE name ILIKE $1 OR email ILIKE $1';
-            params.push(`%${search}%`);
+        // Fechar Modal
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('show');
         }
-        
-        query += ' ORDER BY created_at DESC';
-        
-        const result = await pool.query(query, params);
-        res.json({ users: result.rows });
-    } catch (error) {
-        console.error('❌ Erro ao buscar usuários:', error);
-        res.status(500).json({ error: 'Erro ao buscar usuários' });
-    }
-});
 
-// Obter detalhes de um usuário (admin)
-app.get('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (req, res) => {
-    try {
-        const { userId } = req.params;
-        
-        const result = await pool.query(
-            'SELECT id, name, email, phone, credits_balance, role, status, created_at FROM users WHERE id = $1',
-            [userId]
-        );
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Usuário não encontrado' });
+        // Logout
+        function logout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('userData');
+            window.location.href = '/login.html';
         }
-        
-        res.json({ user: result.rows[0] });
-    } catch (error) {
-        console.error('❌ Erro ao buscar usuário:', error);
-        res.status(500).json({ error: 'Erro ao buscar usuário' });
-    }
-});
 
-// Atualizar usuário (admin)
-app.put('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (req, res) => {
-    try {
-        const { userId } = req.params;
-        const { credits_balance, role, status } = req.body;
-        
-        const updates = [];
-        const values = [];
-        let paramCount = 1;
-        
-        if (credits_balance !== undefined) {
-            updates.push(`credits_balance = $${paramCount}`);
-            values.push(credits_balance);
-            paramCount++;
-        }
-        
-        if (role !== undefined) {
-            updates.push(`role = $${paramCount}`);
-            values.push(role);
-            paramCount++;
-        }
-        
-        if (status !== undefined) {
-            updates.push(`status = $${paramCount}`);
-            values.push(status);
-            paramCount++;
-        }
-        
-        if (updates.length === 0) {
-            return res.status(400).json({ error: 'Nenhum campo para atualizar' });
-        }
-        
-        values.push(userId);
-        const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING id, name, email, credits_balance, role, status`;
-        
-        const result = await pool.query(query, values);
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Usuário não encontrado' });
-        }
-        
-        console.log('✅ Usuário atualizado:', userId);
-        res.json({ user: result.rows[0] });
-    } catch (error) {
-        console.error('❌ Erro ao atualizar usuário:', error);
-        res.status(500).json({ error: 'Erro ao atualizar usuário' });
-    }
-});
-
-// Listar transações (admin)
-app.get('/api/admin/transactions', authMiddleware, adminMiddleware, async (req, res) => {
-    try {
-        const { status } = req.query;
-        
-        let query = `
-            SELECT 
-                t.id,
-                t.user_id,
-                t.package_id,
-                t.amount,
-                t.status,
-                t.payment_method,
-                t.credits,
-                t.created_at,
-                u.name as user_name,
-                u.email as user_email
-            FROM transactions t
-            JOIN users u ON t.user_id = u.id
-        `;
-        
-        const params = [];
-        
-        if (status) {
-            query += ' WHERE t.status = $1';
-            params.push(status);
-        }
-        
-        query += ' ORDER BY t.created_at DESC LIMIT 100';
-        
-        const result = await pool.query(query, params);
-        
-        res.json({ transactions: result.rows });
-    } catch (error) {
-        console.error('❌ Erro ao buscar transações:', error);
-        res.status(500).json({ error: 'Erro ao buscar transações' });
-    }
-});
-
-// Exportar transações (placeholder)
-app.get('/api/admin/export/transactions', authMiddleware, adminMiddleware, async (req, res) => {
-    res.json({ message: 'Funcionalidade de exportação em desenvolvimento' });
-});
-
-// Exportar usuários (placeholder)
-app.get('/api/admin/export/users', authMiddleware, adminMiddleware, async (req, res) => {
-    res.json({ message: 'Funcionalidade de exportação em desenvolvimento' });
-});
-
-// ==================== INICIAR SERVIDOR ====================
-
-app.listen(PORT, () => {
-    console.log('\n╔═══════════════════════════════════════════════════════╗');
-    console.log('║     🚀 LEADS PARA TODOS - BACKEND INICIADO          ║');
-    console.log('╠═══════════════════════════════════════════════════════╣');
-    console.log(`║     📡 Porta: ${PORT}                                    ║`);
-    console.log(`║     🌍 Ambiente: ${process.env.NODE_ENV || 'development'}                      ║`);
-    console.log(`║     🎯 Frontend: https://jkvzqvlk.gensparkspace.com  ║`);
-    console.log('╠═══════════════════════════════════════════════════════╣');
-    console.log(`║     💳 Mercado Pago: ${process.env.MERCADOPAGO_ACCESS_TOKEN ? '✅ Configurado' : '❌ Não configurado'}           ║`);
-    console.log(`║     📧 Resend API: ${process.env.RESEND_API_KEY ? '✅ Configurado' : '❌ Não configurado'}             ║`);
-    console.log(`║     ✅ Rotas Admin: ATIVAS                           ║`);
-    console.log('╚═══════════════════════════════════════════════════════╝\n');
-});
+        // Inicializar
+        loadAdminData();
+        loadDashboard();
+    </script>
+</body>
+</html>
