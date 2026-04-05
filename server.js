@@ -59,10 +59,14 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('combined'));
 
-// Rotas existentes
-app.use('/api/auth', require('./src/routes/auth'));
-app.use('/api/leads', require('./src/routes/leads'));
-app.use('/api/payment', require('./src/routes/payment'));
+// Rotas existentes (CAMINHO CORRIGIDO COM src/)
+const authRoutes = require('./src/routes/auth');
+const leadsRoutes = require('./src/routes/leads');
+const paymentRoutes = require('./src/routes/payment');
+
+app.use('/api/auth', authRoutes);
+app.use('/api/leads', leadsRoutes);
+app.use('/api/payment', paymentRoutes);
 
 // ========================================
 // ROTAS ADMIN
