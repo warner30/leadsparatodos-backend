@@ -564,7 +564,107 @@ app.put('/api/auth/profile', authMiddleware, async (req, res) => {
 });
 
 // Alterar senha do usuário logado
-app.put('/api/auth/password', authMiddleware, async (req, res) => {
+app.put('/api/auth/password', authMiddleware, async (req, res) => { // Esqueci minha senha - Enviar email com token
+app.post('/api/auth/forgot-password', async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        console.log('🔑 Solicitação de recuperação de senha:', email);
+
+        if (!email) {
+            return res.status(400).json({ error: 'Email é obrigatório' });
+        }
+
+        const result = await pool.query(
+            'SELECT id, name, email FROM users WHERE email = $1',
+            [email]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Email não encontrado' });
+        }
+
+        const user = result.rows[0];
+        
+        // Gerar token único
+        const crypto = require('crypto');
+        const resetToken = crypto.randomBytes(32).toString('hex');
+        const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hora
+
+        // Salvar token no banco
+        await pool.query(
+            'UPDATE users SET reset_token = $1, reset_token_expiry = $2 WHERE id = $3',
+            [resetToken, resetTokenExpiry, user.id]
+        );
+
+        // URL do reset (IMPORTANTE: ajuste o domínio se necessário)
+        const resetUrl = `https://jkvzqvlk.gensparkspace.com/reset-password.html?token=${resetToken}`;
+
+        console.log('✅ Token gerado para:', email);
+        console.log('🔗 Link de recuperação:', resetUrl);
+
+        // NOTA: Aqui você precisaria integrar um serviço de email (Resend, SendGrid, etc)
+        // Por enquanto, vou apenas retornar sucesso e logar o link
+        
+        res.json({ 
+            message: 'Email de recuperação enviado com sucesso',
+            // ⚠️ REMOVA esta linha em produção (só para teste):
+            resetUrl: resetUrl
+        });
+
+    } catch (error) {
+        console.error('❌ Erro na recuperação de senha:', error);
+        res.status(500).json({ error: 'Erro ao processar recuperação de senha' });
+    }
+});
+
+// Resetar senha com token
+app.post('/api/auth/reset-password', async (req, res) => {
+    try {
+        const { token, newPassword } = req.body;
+
+        console.log('🔄 Tentativa de reset de senha');
+
+        if (!token || !newPassword) {
+            return res.status(400).json({ error: 'Token e nova senha são obrigatórios' });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: 'A senha deve ter no mínimo 6 caracteres' });
+        }
+
+        // Buscar usuário com token válido
+        const result = await pool.query(
+            'SELECT id FROM users WHERE reset_token = $1 AND reset_token_expiry > NOW()',
+            [token]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(400).json({ error: 'Token inválido ou expirado' });
+        }
+
+        const userId = result.rows[0].id;
+
+        // Hash da nova senha
+        const bcrypt = require('bcryptjs');
+        const password_hash = await bcrypt.hash(newPassword, 10);
+
+        // Atualizar senha e limpar token
+        await pool.query(
+            'UPDATE users SET password_hash = $1, reset_token = NULL, reset_token_expiry = NULL WHERE id = $2',
+            [password_hash, userId]
+        );
+
+        console.log('✅ Senha resetada com sucesso para usuário:', userId);
+
+        res.json({ message: 'Senha alterada com sucesso' });
+
+    } catch (error) {
+        console.error('❌ Erro ao resetar senha:', error);
+        res.status(500).json({ error: 'Erro ao resetar senha' });
+    }
+});
+
     try {
         const { currentPassword, newPassword } = req.body;
 
