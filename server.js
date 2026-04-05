@@ -462,6 +462,31 @@ app.get('/api/auth/profile', authMiddleware, async (req, res) => {
     }
 });
 
+// Atualizar perfil do usuário
+app.put('/api/auth/profile', authMiddleware, async (req, res) => {
+    try {
+        const { name, phone } = req.body;
+
+        console.log('📝 Atualizando perfil do usuário:', req.userId);
+
+        if (!name) {
+            return res.status(400).json({ error: 'Nome é obrigatório' });
+        }
+
+        await pool.query(
+            'UPDATE users SET name = $1, phone = $2 WHERE id = $3',
+            [name, phone || null, req.userId]
+        );
+
+        console.log('✅ Perfil atualizado com sucesso');
+
+        res.json({ message: 'Perfil atualizado com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao atualizar perfil:', error);
+        res.status(500).json({ error: 'Erro ao atualizar perfil' });
+    }
+});
+
 // Alterar senha do usuário logado
 app.put('/api/auth/password', authMiddleware, async (req, res) => {
     try {
