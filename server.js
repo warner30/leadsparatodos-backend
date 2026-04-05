@@ -538,7 +538,84 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // Perfil do usuário
-app.get('/api/auth/profile', authMiddleware, async (req, res) => {
+app.get('/api/auth/profile', authMiddleware, async (req, res) => { // Atualizar perfil do usuário
+app.put('/api/auth/profile', authMiddleware, async (req, res) => {
+    try {
+        const { name, phone } = req.body;
+
+        console.log('📝 Atualizando perfil do usuário:', req.userId);
+
+        if (!name) {
+            return res.status(400).json({ error: 'Nome é obrigatório' });
+        }
+
+        await pool.query(
+            'UPDATE users SET name = $1, phone = $2 WHERE id = $3',
+            [name, phone || null, req.userId]
+        );
+
+        console.log('✅ Perfil atualizado com sucesso');
+
+        res.json({ message: 'Perfil atualizado com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao atualizar perfil:', error);
+        res.status(500).json({ error: 'Erro ao atualizar perfil' });
+    }
+});
+
+// Alterar senha do usuário logado
+app.put('/api/auth/password', authMiddleware, async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+
+        console.log('🔐 Solicitação de alteração de senha para usuário:', req.userId);
+
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ error: 'Senha atual e nova senha são obrigatórias' });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: 'A nova senha deve ter no mínimo 6 caracteres' });
+        }
+
+        // Buscar usuário com senha hash
+        const result = await pool.query(
+            'SELECT id, password_hash FROM users WHERE id = $1',
+            [req.userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+
+        const user = result.rows[0];
+
+        // Verificar senha atual (assumindo que você usa bcryptjs)
+        const bcrypt = require('bcryptjs');
+        const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+        
+        if (!isValidPassword) {
+            return res.status(401).json({ error: 'Senha atual incorreta' });
+        }
+
+        // Hash da nova senha
+        const newPasswordHash = await bcrypt.hash(newPassword, 10);
+
+        // Atualizar senha
+        await pool.query(
+            'UPDATE users SET password_hash = $1 WHERE id = $2',
+            [newPasswordHash, req.userId]
+        );
+
+        console.log('✅ Senha alterada com sucesso para usuário:', req.userId);
+
+        res.json({ message: 'Senha alterada com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao alterar senha:', error);
+        res.status(500).json({ error: 'Erro ao alterar senha' });
+    }
+});
+
     try {
         const result = await pool.query(
             'SELECT id, name, email, credits_balance, role, status, created_at FROM users WHERE id = $1',
