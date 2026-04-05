@@ -42,32 +42,33 @@ const PACKAGES = {
         id: 'package_5k',
         name: '5.000 Créditos',
         credits: 5000,
-        price: 70000,
+        price: 70000, // R$ 700,00 em centavos
         pricePerLead: 0.14
     },
     package_10k: {
         id: 'package_10k',
         name: '10.000 Créditos',
         credits: 10000,
-        price: 130000,
+        price: 130000, // R$ 1.300,00 em centavos
         pricePerLead: 0.13
     },
     package_20k: {
         id: 'package_20k',
         name: '20.000 Créditos',
         credits: 20000,
-        price: 240000,
+        price: 240000, // R$ 2.400,00 em centavos
         pricePerLead: 0.12
     },
     package_50k: {
         id: 'package_50k',
         name: '50.000 Créditos',
         credits: 50000,
-        price: 550000,
+        price: 550000, // R$ 5.500,00 em centavos
         pricePerLead: 0.11
     }
 };
 
+// Sistema de cupons
 const COUPONS = {
     TESTE99: {
         code: 'TESTE99',
@@ -117,6 +118,7 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Middleware de autenticação
 const authMiddleware = async (req, res, next) => {
     try {
         const token = req.headers.authorization?.replace('Bearer ', '');
@@ -134,6 +136,7 @@ const authMiddleware = async (req, res, next) => {
     }
 };
 
+// Middleware de admin
 const adminMiddleware = async (req, res, next) => {
     try {
         const userResult = await pool.query('SELECT role FROM users WHERE id = $1', [req.userId]);
@@ -173,6 +176,7 @@ async function sendEmail(to, subject, htmlContent) {
     }
 }
 
+// Templates de email
 const emailTemplates = {
     welcome: (name) => `
         <!DOCTYPE html>
@@ -230,8 +234,198 @@ const emailTemplates = {
     `
 };
 
+// ==================== ROTAS DE SAÚDE ====================
+
+// ENDPOINT TEMPORÁRIO PARA CORRIGIR BANCO DE DADOS
+app.get('/api/admin/fix-database-columns', async (req, res) => {
+    try {
+        console.log('🔧 Iniciando correção do banco de dados...');
+        
+        // Verificar se as colunas já existem
+        const checkColumns = await pool.query(`
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'transactions' 
+            AND column_name IN ('coupon_code', 'discount_amount')
+        `);
+        
+        const existingColumns = checkColumns.rows.map(row => row.column_name);
+        
+        let results = {
+            coupon_code: existingColumns.includes('coupon_code') ? 'já existe' : 'criada',
+            discount_amount: existingColumns.includes('discount_amount') ? 'já existe' : 'criada'
+        };
+        
+        // Adicionar coluna coupon_code se não existir
+        if (!existingColumns.includes('coupon_code')) {
+            await pool.query('ALTER TABLE transactions ADD COLUMN coupon_code VARCHAR(50)');
+            console.log('✅ Coluna coupon_code adicionada');
+        }
+        
+        // Adicionar coluna discount_amount se não existir
+        if (!existingColumns.includes('discount_amount')) {
+            await pool.query('ALTER TABLE transactions ADD COLUMN discount_amount INTEGER DEFAULT 0');
+            console.log('✅ Coluna discount_amount adicionada');
+        }
+        
+        // Verificar estrutura final
+        const finalStructure = await pool.query(`
+            SELECT column_name, data_type, character_maximum_length 
+            FROM information_schema.columns 
+            WHERE table_name = 'transactions' 
+            ORDER BY ordinal_position
+        `);
+        
+        console.log('✅ Banco de dados corrigido com sucesso!');
+        
+        res.json({
+            success: true,
+            message: 'Banco de dados corrigido com sucesso!',
+            results: results,
+            table_structure: finalStructure.rows
+        });
+    } catch (error) {
+        console.error('❌ Erro ao corrigir banco de dados:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            details: error.stack
+        });
+    }
+});
+
+// ENDPOINT PARA CRIAR TABELA DE SOLICITAÇÕES DE LEADS
+app.get('/api/admin/setup-leads-requests', async (req, res) => {
+    try {
+        console.log('🔧 Criando tabela leads_requests...');
+        
+        // Verificar se a tabela já existe
+        const tableExists = await pool.query(`
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'leads_requests'
+            );
+        `);
+        
+        if (tableExists.rows[0].exists) {
+            return res.json({
+                success: true,
+                message: 'Tabela leads_requests já existe',
+                status: 'already_exists'
+            });
+        }
+        
+        // Criar tabela leads_requests
+        await pool.query(`
+            CREATE TABLE leads_requests (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                credits_requested INTEGER NOT NULL,
+                status VARCHAR(20) DEFAULT 'pending',
+                filters JSONB,
+                whatsapp_message TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                confirmed_at TIMESTAMP,
+                cancelled_at TIMESTAMP,
+                expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '24 hours',
+                admin_notes TEXT
+            );
+        `);
+        
+        console.log('✅ Tabela leads_requests criada');
+        
+        // Adicionar coluna credits_reserved na tabela users
+        const checkUserColumn = await pool.query(`
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'users' AND column_name = 'credits_reserved'
+        `);
+        
+        if (checkUserColumn.rows.length === 0) {
+            await pool.query(`
+                ALTER TABLE users ADD COLUMN credits_reserved INTEGER DEFAULT 0;
+            `);
+            console.log('✅ Coluna credits_reserved adicionada na tabela users');
+        }
+        
+        // Criar índices
+        await pool.query(`
+            CREATE INDEX idx_leads_requests_user_id ON leads_requests(user_id);
+            CREATE INDEX idx_leads_requests_status ON leads_requests(status);
+            CREATE INDEX idx_leads_requests_expires_at ON leads_requests(expires_at);
+        `);
+        
+        console.log('✅ Índices criados');
+        
+        res.json({
+            success: true,
+            message: 'Tabela leads_requests criada com sucesso!',
+            status: 'created'
+        });
+    } catch (error) {
+        console.error('❌ Erro ao criar tabela:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            details: error.stack
+        });
+    }
+});
+
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development'
+    });
+});
+
+app.get('/api/test-db', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT NOW()');
+        res.json({ 
+            success: true, 
+            message: 'Conexão com banco de dados OK',
+            timestamp: result.rows[0].now 
+        });
+    } catch (error) {
+        console.error('❌ Erro ao testar DB:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Erro ao conectar com banco de dados' 
+        });
+    }
+});
+
+// ENDPOINT TEMPORÁRIO PARA VERIFICAR CRÉDITOS
+app.get('/api/admin/check-credits/:email', async (req, res) => {
+    try {
+        const { email } = req.params;
+        const result = await pool.query(
+            'SELECT id, name, email, credits_balance, created_at, updated_at FROM users WHERE email = $1',
+            [email]
+        );
+        
+        if (result.rows.length === 0) {
+            return res.json({ success: false, message: 'Usuário não encontrado' });
+        }
+        
+        res.json({
+            success: true,
+            user: result.rows[0]
+        });
+    } catch (error) {
+        console.error('❌ Erro ao verificar créditos:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
 // ==================== ROTAS DE AUTENTICAÇÃO ====================
 
+// Registro
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { name, email, password } = req.body;
@@ -242,20 +436,24 @@ app.post('/api/auth/register', async (req, res) => {
             return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
         }
 
-        const userExists = await pool.query('SELECT id FROM users WHERE email = $1', [email.toLowerCase()]);
+        // Verificar se usuário já existe
+        const userExists = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
         if (userExists.rows.length > 0) {
             return res.status(400).json({ error: 'Email já cadastrado' });
         }
 
-        const hashedPassword = await bcrypt.hash(password, 10);
+        // Hash da senha
+        const password_hash = await bcrypt.hash(password, 10);
 
+        // Inserir usuário
         const result = await pool.query(
-            'INSERT INTO users (name, email, password, credits_balance, role, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, credits_balance, role',
-            [name, email.toLowerCase(), hashedPassword, 0, 'user', 'active']
+            'INSERT INTO users (name, email, password_hash, credits_balance, role, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, credits_balance, role',
+            [name, email, password_hash, 0, 'user', 'active']
         );
 
         const user = result.rows[0];
 
+        // Enviar email de boas-vindas
         await sendEmail(
             email,
             'Bem-vindo ao Leads Para Todos!',
@@ -280,6 +478,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
+// Login
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -290,9 +489,10 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(400).json({ error: 'Email e senha são obrigatórios' });
         }
 
+        // Buscar usuário
         const result = await pool.query(
-            'SELECT id, name, email, password, credits_balance, role, status FROM users WHERE email = $1',
-            [email.toLowerCase()]
+            'SELECT id, name, email, password_hash, credits_balance, role, status FROM users WHERE email = $1',
+            [email]
         );
 
         if (result.rows.length === 0) {
@@ -301,15 +501,18 @@ app.post('/api/auth/login', async (req, res) => {
 
         const user = result.rows[0];
 
-        const validPassword = await bcrypt.compare(password, user.password);
+        // Verificar senha
+        const validPassword = await bcrypt.compare(password, user.password_hash);
         if (!validPassword) {
             return res.status(401).json({ error: 'Email ou senha incorretos' });
         }
 
+        // Verificar status da conta
         if (user.status !== 'active') {
             return res.status(403).json({ error: 'Conta inativa' });
         }
 
+        // Gerar token JWT
         const token = jwt.sign(
             { userId: user.id, email: user.email },
             process.env.JWT_SECRET || 'secret-key-default',
@@ -334,6 +537,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
+// Perfil do usuário
 app.get('/api/auth/profile', authMiddleware, async (req, res) => {
     try {
         const result = await pool.query(
@@ -352,13 +556,14 @@ app.get('/api/auth/profile', authMiddleware, async (req, res) => {
     }
 });
 
+// Esqueci minha senha
 app.post('/api/auth/forgot-password', async (req, res) => {
     try {
         const { email } = req.body;
 
         console.log('🔑 Solicitação de recuperação de senha:', email);
 
-        const result = await pool.query('SELECT id, name, email FROM users WHERE email = $1', [email.toLowerCase()]);
+        const result = await pool.query('SELECT id, name, email FROM users WHERE email = $1', [email]);
 
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Email não encontrado' });
@@ -366,7 +571,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
         const user = result.rows[0];
         const resetToken = crypto.randomBytes(32).toString('hex');
-        const resetTokenExpiry = new Date(Date.now() + 3600000);
+        const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hora
 
         await pool.query(
             'UPDATE users SET reset_token = $1, reset_token_expiry = $2 WHERE id = $3',
@@ -390,6 +595,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     }
 });
 
+// Resetar senha
 app.post('/api/auth/reset-password', async (req, res) => {
     try {
         const { token, newPassword } = req.body;
@@ -406,11 +612,11 @@ app.post('/api/auth/reset-password', async (req, res) => {
         }
 
         const userId = result.rows[0].id;
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        const password_hash = await bcrypt.hash(newPassword, 10);
 
         await pool.query(
-            'UPDATE users SET password = $1, reset_token = NULL, reset_token_expiry = NULL WHERE id = $2',
-            [hashedPassword, userId]
+            'UPDATE users SET password_hash = $1, reset_token = NULL, reset_token_expiry = NULL WHERE id = $2',
+            [password_hash, userId]
         );
 
         console.log('✅ Senha resetada com sucesso para usuário:', userId);
@@ -424,14 +630,435 @@ app.post('/api/auth/reset-password', async (req, res) => {
 
 // ==================== ROTAS DE PAGAMENTO ====================
 
-app.get('/api/payment/transactions', authMiddleware, async (req, res) => {
+// Processar pagamento com CARTÃO
+app.post('/api/payment/process-card', authMiddleware, async (req, res) => {
+    try {
+        console.log('💳 [CARTÃO] Recebendo pagamento via CARTÃO...');
+        console.log('📦 [CARTÃO] Body completo:', JSON.stringify(req.body, null, 2));
+
+        const { package_id, payment_data, coupon, discount, final_price } = req.body;
+
+        // Validar dados obrigatórios
+        if (!package_id || !payment_data) {
+            console.log('❌ [CARTÃO] Dados obrigatórios faltando');
+            return res.status(400).json({ error: 'Dados de pagamento incompletos' });
+        }
+
+        // Buscar pacote ou criar pacote personalizado
+        let selectedPackage;
+        
+        if (package_id === 'personalizado' || package_id === 'package_custom') {
+            // Pacote personalizado
+            const { credits, amount } = req.body;
+            if (!credits || credits < 1000) {
+                return res.status(400).json({ error: 'Quantidade mínima de créditos é 1.000' });
+            }
+            
+            // O amount do frontend já vem em centavos
+            let priceInCents = amount || (credits * 14);
+            
+            // Se o amount veio como número decimal (reais), converter para centavos
+            if (amount && amount < 100 && credits >= 1000) {
+                priceInCents = Math.round(amount * 100);
+            }
+            
+            selectedPackage = {
+                id: 'package_custom',
+                name: `${credits.toLocaleString('pt-BR')} Créditos (Personalizado)`,
+                credits: credits,
+                price: priceInCents // Preço em centavos
+            };
+            console.log('✅ [CARTÃO] Pacote PERSONALIZADO criado:', selectedPackage);
+        } else {
+            // Pacote fixo
+            selectedPackage = PACKAGES[package_id];
+            if (!selectedPackage) {
+                console.log('❌ [CARTÃO] Pacote não encontrado:', package_id);
+                return res.status(400).json({ error: 'Pacote inválido' });
+            }
+            console.log('✅ [CARTÃO] Pacote FIXO encontrado:', selectedPackage);
+        }
+
+        // Buscar dados do usuário
+        const userResult = await pool.query(
+            'SELECT id, name, email FROM users WHERE id = $1',
+            [req.userId]
+        );
+
+        if (userResult.rows.length === 0) {
+            console.log('❌ [CARTÃO] Usuário não encontrado:', req.userId);
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+
+        const user = userResult.rows[0];
+        console.log('✅ [CARTÃO] Usuário encontrado:', user);
+
+        // Aplicar cupom se fornecido
+        let finalPrice = selectedPackage.price;
+        let discountAmount = 0;
+        let appliedCoupon = null;
+
+        if (coupon) {
+            appliedCoupon = validateCoupon(coupon);
+            if (appliedCoupon) {
+                discountAmount = calculateDiscount(selectedPackage.price, appliedCoupon);
+                finalPrice = selectedPackage.price - discountAmount;
+                console.log(`✅ [CARTÃO] Cupom aplicado: ${coupon} - ${appliedCoupon.discount}%`);
+                console.log(`💰 [CARTÃO] Preço original: R$ ${(selectedPackage.price / 100).toFixed(2)}`);
+                console.log(`💰 [CARTÃO] Desconto: R$ ${(discountAmount / 100).toFixed(2)}`);
+                console.log(`💰 [CARTÃO] Preço final: R$ ${(finalPrice / 100).toFixed(2)}`);
+            }
+        }
+
+        // Criar registro de transação
+        const transactionResult = await pool.query(
+            `INSERT INTO transactions 
+            (user_id, package_id, amount, status, payment_method, credits, coupon_code, discount_amount) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+            RETURNING id`,
+            [
+                user.id,
+                selectedPackage.id,
+                finalPrice,
+                'pending',
+                'credit_card',
+                selectedPackage.credits,
+                appliedCoupon?.code || null,
+                discountAmount
+            ]
+        );
+
+        const transactionId = transactionResult.rows[0].id;
+        console.log('✅ [CARTÃO] Transação criada:', transactionId);
+
+        // Preparar payload para Mercado Pago
+        const paymentPayload = {
+            transaction_amount: finalPrice / 100, // Converter centavos para reais
+            token: payment_data.token,
+            description: selectedPackage.name,
+            installments: payment_data.installments || 1,
+            payment_method_id: payment_data.payment_method_id,
+            payer: {
+                email: user.email,
+                identification: {
+                    type: payment_data.payer?.identification?.type || 'CPF',
+                    number: payment_data.payer?.identification?.number || '00000000000'
+                }
+            },
+            notification_url: `${process.env.BACKEND_URL}/api/webhook/mercadopago`,
+            external_reference: transactionId.toString()
+        };
+
+        console.log('🚀 [CARTÃO] Enviando pagamento para Mercado Pago...');
+        console.log('📤 [CARTÃO] Payload:', JSON.stringify(paymentPayload, null, 2));
+
+        // Criar pagamento no Mercado Pago
+        const payment = await mercadopago.payment.create(paymentPayload);
+
+        console.log('📥 [CARTÃO] Resposta Mercado Pago:', JSON.stringify(payment.body, null, 2));
+
+        // Atualizar transação com payment_id
+        await pool.query(
+            'UPDATE transactions SET payment_id = $1, status = $2 WHERE id = $3',
+            [payment.body.id, payment.body.status, transactionId]
+        );
+
+        // Se pagamento aprovado, adicionar créditos
+        if (payment.body.status === 'approved') {
+            console.log('✅ [CARTÃO] Pagamento APROVADO! Adicionando créditos...');
+            
+            await pool.query(
+                'UPDATE users SET credits_balance = credits_balance + $1 WHERE id = $2',
+                [selectedPackage.credits, user.id]
+            );
+
+            await pool.query(
+                'UPDATE transactions SET status = $1 WHERE id = $2',
+                ['approved', transactionId]
+            );
+
+            // Enviar email de confirmação
+            await sendEmail(
+                user.email,
+                'Pagamento Aprovado - Leads Para Todos',
+                emailTemplates.paymentApproved(user.name, selectedPackage.credits, selectedPackage.name)
+            );
+
+            console.log(`✅ [CARTÃO] Créditos adicionados! Novo saldo: ${selectedPackage.credits}`);
+        }
+
+        res.json({
+            success: true,
+            status: payment.body.status,
+            payment_id: payment.body.id,
+            transaction_id: transactionId
+        });
+
+    } catch (error) {
+        console.error('❌ [CARTÃO] Erro ao processar pagamento:', error);
+        res.status(500).json({ 
+            error: 'Erro ao processar pagamento',
+            details: error.message 
+        });
+    }
+});
+
+// Processar pagamento com PIX
+app.post('/api/payment/process-pix', authMiddleware, async (req, res) => {
+    try {
+        console.log('💳 [PIX] Recebendo pagamento via PIX...');
+        console.log('📦 [PIX] Body completo:', JSON.stringify(req.body, null, 2));
+
+        const { package_id, amount, credits, coupon, discount } = req.body;
+
+        // Validar dados obrigatórios
+        if (!package_id) {
+            console.log('❌ [PIX] package_id não fornecido');
+            return res.status(400).json({ error: 'Pacote não especificado' });
+        }
+
+        // Buscar pacote ou criar pacote personalizado
+        let selectedPackage;
+        
+        if (package_id === 'personalizado' || package_id === 'package_custom') {
+            // Pacote personalizado
+            if (!credits || credits < 1000) {
+                return res.status(400).json({ error: 'Quantidade mínima de créditos é 1.000' });
+            }
+            
+            // O amount do frontend já vem em centavos
+            let priceInCents = amount || (credits * 14);
+            
+            // Se o amount veio como número decimal (reais), converter para centavos
+            if (amount && amount < 100 && credits >= 1000) {
+                priceInCents = Math.round(amount * 100);
+            }
+            
+            selectedPackage = {
+                id: 'package_custom',
+                name: `${credits.toLocaleString('pt-BR')} Créditos (Personalizado)`,
+                credits: credits,
+                price: priceInCents // Preço em centavos
+            };
+            console.log('✅ [PIX] Pacote PERSONALIZADO criado:', selectedPackage);
+        } else {
+            // Pacote fixo
+            selectedPackage = PACKAGES[package_id];
+            if (!selectedPackage) {
+                console.log('❌ [PIX] Pacote não encontrado:', package_id);
+                console.log('📋 [PIX] Pacotes disponíveis:', Object.keys(PACKAGES));
+                return res.status(400).json({ error: 'Pacote inválido' });
+            }
+            console.log('✅ [PIX] Pacote FIXO encontrado:', selectedPackage);
+        }
+
+        // Buscar dados do usuário
+        const userResult = await pool.query(
+            'SELECT id, name, email FROM users WHERE id = $1',
+            [req.userId]
+        );
+
+        if (userResult.rows.length === 0) {
+            console.log('❌ [PIX] Usuário não encontrado:', req.userId);
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+
+        const user = userResult.rows[0];
+        console.log('✅ [PIX] Usuário encontrado:', { id: user.id, name: user.name, email: user.email });
+
+        // Aplicar cupom se fornecido
+        let finalPrice = selectedPackage.price;
+        let discountAmount = 0;
+        let appliedCoupon = null;
+
+        if (coupon) {
+            appliedCoupon = validateCoupon(coupon);
+            if (appliedCoupon) {
+                discountAmount = calculateDiscount(selectedPackage.price, appliedCoupon);
+                finalPrice = selectedPackage.price - discountAmount;
+                console.log(`✅ [PIX] Cupom aplicado: ${coupon} - ${appliedCoupon.discount}%`);
+                console.log(`💰 [PIX] Preço original: R$ ${(selectedPackage.price / 100).toFixed(2)}`);
+                console.log(`💰 [PIX] Desconto: R$ ${(discountAmount / 100).toFixed(2)}`);
+                console.log(`💰 [PIX] Preço final: R$ ${(finalPrice / 100).toFixed(2)}`);
+            }
+        }
+
+        // Criar registro de transação
+        const transactionResult = await pool.query(
+            `INSERT INTO transactions 
+            (user_id, package_id, amount, status, payment_method, credits, coupon_code, discount_amount) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+            RETURNING id`,
+            [
+                user.id,
+                selectedPackage.id,
+                finalPrice,
+                'pending',
+                'pix',
+                selectedPackage.credits,
+                appliedCoupon?.code || null,
+                discountAmount
+            ]
+        );
+
+        const transactionId = transactionResult.rows[0].id;
+        console.log('✅ [PIX] Transação criada:', transactionId);
+
+        // Preparar payload para Mercado Pago PIX
+        const pixPayload = {
+            transaction_amount: finalPrice / 100, // Converter centavos para reais
+            description: selectedPackage.name,
+            payment_method_id: 'pix',
+            payer: {
+                email: user.email,
+                first_name: user.name.split(' ')[0],
+                last_name: user.name.split(' ').slice(1).join(' ') || user.name.split(' ')[0]
+            },
+            notification_url: `${process.env.BACKEND_URL}/api/webhook/mercadopago`,
+            external_reference: transactionId.toString()
+        };
+
+        console.log('🚀 [PIX] Enviando pagamento PIX para Mercado Pago...');
+        console.log('📤 [PIX] Payload:', JSON.stringify(pixPayload, null, 2));
+
+        // Criar pagamento PIX no Mercado Pago
+        const payment = await mercadopago.payment.create(pixPayload);
+
+        console.log('📥 [PIX] Resposta Mercado Pago:', JSON.stringify(payment.body, null, 2));
+
+        // Atualizar transação com payment_id
+        await pool.query(
+            'UPDATE transactions SET payment_id = $1, status = $2 WHERE id = $3',
+            [payment.body.id, payment.body.status, transactionId]
+        );
+
+        // Extrair dados do QR Code
+        const qrCodeData = payment.body.point_of_interaction?.transaction_data;
+        
+        if (!qrCodeData || !qrCodeData.qr_code_base64) {
+            console.error('❌ [PIX] QR Code não gerado pelo Mercado Pago');
+            return res.status(500).json({ error: 'Erro ao gerar QR Code' });
+        }
+
+        console.log('✅ [PIX] QR Code gerado com sucesso');
+        console.log('🔍 [PIX] QR Code Base64 length:', qrCodeData.qr_code_base64?.length);
+        console.log('🔍 [PIX] QR Code Text length:', qrCodeData.qr_code?.length);
+
+        res.json({
+            success: true,
+            payment_id: payment.body.id,
+            transaction_id: transactionId,
+            qr_code_base64: qrCodeData.qr_code_base64,
+            qr_code: qrCodeData.qr_code,
+            qr_code_text: qrCodeData.qr_code,
+            amount: finalPrice / 100
+        });
+
+    } catch (error) {
+        console.error('❌ [PIX] Erro ao processar pagamento:', error);
+        res.status(500).json({ 
+            error: 'Erro ao processar pagamento PIX',
+            details: error.message 
+        });
+    }
+});
+
+// Webhook do Mercado Pago
+app.post('/api/webhook/mercadopago', async (req, res) => {
+    try {
+        console.log('🔔 [WEBHOOK] Notificação recebida do Mercado Pago');
+        console.log('📦 [WEBHOOK] Body:', JSON.stringify(req.body, null, 2));
+
+        const { type, data } = req.body;
+
+        // Responder imediatamente ao Mercado Pago
+        res.sendStatus(200);
+
+        if (type === 'payment') {
+            const paymentId = data.id;
+            console.log('💳 [WEBHOOK] Processando pagamento:', paymentId);
+
+            // Buscar informações do pagamento no Mercado Pago
+            const payment = await mercadopago.payment.get(paymentId);
+            console.log('📥 [WEBHOOK] Status do pagamento:', payment.body.status);
+
+            if (payment.body.status === 'approved') {
+                console.log('✅ [WEBHOOK] Pagamento APROVADO! Adicionando créditos...');
+
+                const externalReference = payment.body.external_reference;
+
+                // Buscar transação
+                const transactionResult = await pool.query(
+                    'SELECT t.id, t.user_id, t.credits, t.status, u.name, u.email FROM transactions t JOIN users u ON t.user_id = u.id WHERE t.id = $1',
+                    [externalReference]
+                );
+
+                if (transactionResult.rows.length === 0) {
+                    console.error('❌ [WEBHOOK] Transação não encontrada:', externalReference);
+                    return;
+                }
+
+                const transaction = transactionResult.rows[0];
+
+                // Verificar se já foi processado
+                if (transaction.status === 'approved') {
+                    console.log('⚠️ [WEBHOOK] Pagamento já processado anteriormente');
+                    return;
+                }
+
+                // Adicionar créditos
+                await pool.query(
+                    'UPDATE users SET credits_balance = credits_balance + $1 WHERE id = $2',
+                    [transaction.credits, transaction.user_id]
+                );
+
+                // Atualizar status da transação
+                await pool.query(
+                    'UPDATE transactions SET status = $1 WHERE id = $2',
+                    ['approved', transaction.id]
+                );
+
+                // Enviar email de confirmação
+                await sendEmail(
+                    transaction.email,
+                    'Pagamento Aprovado - Leads Para Todos',
+                    emailTemplates.paymentApproved(
+                        transaction.name,
+                        transaction.credits,
+                        `${transaction.credits.toLocaleString('pt-BR')} Créditos`
+                    )
+                );
+
+                console.log(`✅ [WEBHOOK] Créditos adicionados! Usuário: ${transaction.user_id}, Créditos: ${transaction.credits}`);
+            }
+        }
+    } catch (error) {
+        console.error('❌ [WEBHOOK] Erro ao processar webhook:', error);
+    }
+});
+
+// Verificar status de pagamento
+app.get('/api/payment/status/:payment_id', authMiddleware, async (req, res) => {
+    try {
+        const { payment_id } = req.params;
+
+        const payment = await mercadopago.payment.get(payment_id);
+
+        res.json({
+            status: payment.body.status,
+            status_detail: payment.body.status_detail
+        });
+    } catch (error) {
+        console.error('❌ Erro ao verificar status do pagamento:', error);
+        res.status(500).json({ error: 'Erro ao verificar status do pagamento' });
+    }
+});
+
+// Listar transações do usuário
+app.get('/api/transactions', authMiddleware, async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT id, type, amount, description, created_at, reference_id
-             FROM credit_transactions
-             WHERE user_id = $1
-             ORDER BY created_at DESC
-             LIMIT 100`,
+            'SELECT id, package_id, amount, status, payment_method, credits, created_at FROM transactions WHERE user_id = $1 ORDER BY created_at DESC',
             [req.userId]
         );
 
@@ -442,116 +1069,373 @@ app.get('/api/payment/transactions', authMiddleware, async (req, res) => {
     }
 });
 
-// ==================== ROTAS DE LEADS ====================
+// ==================== ROTAS DE SOLICITAÇÕES DE LEADS ====================
 
-app.post('/api/leads-requests/simple', authMiddleware, async (req, res) => {
+// Criar solicitação de leads (reservar créditos)
+app.post('/api/leads-requests', authMiddleware, async (req, res) => {
     try {
         const { credits_requested, filters, whatsapp_message } = req.body;
-
+        
+        console.log('📝 [LEADS-REQUEST] Nova solicitação:', { userId: req.userId, credits: credits_requested });
+        
+        // Validar créditos solicitados
         if (!credits_requested || credits_requested < 1000) {
-            return res.status(400).json({ error: 'Quantidade mínima: 1.000 créditos' });
+            return res.status(400).json({ error: 'Quantidade mínima é 1.000 créditos' });
         }
-
-        const userResult = await pool.query('SELECT credits_balance FROM users WHERE id = $1', [req.userId]);
-        const currentBalance = parseInt(userResult.rows[0].credits_balance);
-
-        if (currentBalance < credits_requested) {
-            return res.status(400).json({
-                error: 'Saldo insuficiente',
-                requested: credits_requested,
-                available: currentBalance,
-                missing: credits_requested - currentBalance
+        
+        // Buscar dados do usuário
+        const userResult = await pool.query(
+            'SELECT id, name, email, credits_balance, credits_reserved FROM users WHERE id = $1',
+            [req.userId]
+        );
+        
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+        
+        const user = userResult.rows[0];
+        const creditsReserved = user.credits_reserved || 0;
+        const creditsAvailable = user.credits_balance - creditsReserved;
+        
+        console.log('💰 [LEADS-REQUEST] Créditos disponíveis:', creditsAvailable);
+        
+        // Verificar se tem créditos suficientes
+        if (creditsAvailable < credits_requested) {
+            return res.status(400).json({ 
+                error: 'Créditos insuficientes',
+                available: creditsAvailable,
+                requested: credits_requested
             });
         }
-
+        
+        // Criar solicitação
+        const requestResult = await pool.query(`
+            INSERT INTO leads_requests 
+            (user_id, credits_requested, status, filters, whatsapp_message, created_at, expires_at) 
+            VALUES ($1, $2, $3, $4, $5, NOW(), NOW() + INTERVAL '24 hours') 
+            RETURNING *
+        `, [user.id, credits_requested, 'pending', JSON.stringify(filters), whatsapp_message]);
+        
+        const request = requestResult.rows[0];
+        
+        // Atualizar créditos reservados do usuário
         await pool.query(
-            `INSERT INTO leads_requests (user_id, credits_requested, filters, whatsapp_message, status)
-             VALUES ($1, $2, $3, $4, 'pending')`,
-            [req.userId, credits_requested, JSON.stringify(filters), whatsapp_message]
+            'UPDATE users SET credits_reserved = credits_reserved + $1 WHERE id = $2',
+            [credits_requested, user.id]
         );
-
-        console.log('✅ Solicitação criada:', req.userId, credits_requested);
-
+        
+        console.log('✅ [LEADS-REQUEST] Solicitação criada:', request.id);
+        console.log('🔒 [LEADS-REQUEST] Créditos reservados:', credits_requested);
+        
         res.json({
-            message: 'Solicitação enviada com sucesso',
-            credits_requested,
-            whatsapp_url: `https://wa.me/5511975207500?text=${encodeURIComponent(whatsapp_message)}`
+            success: true,
+            request: request,
+            credits_remaining: creditsAvailable - credits_requested
         });
+        
     } catch (error) {
-        console.error('❌ Erro ao criar solicitação:', error);
+        console.error('❌ [LEADS-REQUEST] Erro:', error);
         res.status(500).json({ error: 'Erro ao criar solicitação' });
     }
 });
 
-app.get('/api/leads/stats', authMiddleware, async (req, res) => {
+// Listar solicitações do usuário
+app.get('/api/leads-requests', authMiddleware, async (req, res) => {
     try {
-        const statsResult = await pool.query(
-            `SELECT 
-                (SELECT COUNT(*) FROM leads_requests WHERE user_id = $1) as total_requests,
-                (SELECT COALESCE(SUM(credits_requested), 0) FROM leads_requests WHERE user_id = $1) as total_credits_requested,
-                (SELECT credits_balance FROM users WHERE id = $1) as credits_balance
-            `,
-            [req.userId]
+        const result = await pool.query(`
+            SELECT * FROM leads_requests 
+            WHERE user_id = $1 
+            ORDER BY created_at DESC
+        `, [req.userId]);
+        
+        res.json({ requests: result.rows });
+    } catch (error) {
+        console.error('❌ Erro ao buscar solicitações:', error);
+        res.status(500).json({ error: 'Erro ao buscar solicitações' });
+    }
+});
+
+// Cancelar solicitação (cliente)
+app.post('/api/leads-requests/:id/cancel', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // Buscar solicitação
+        const requestResult = await pool.query(
+            'SELECT * FROM leads_requests WHERE id = $1 AND user_id = $2',
+            [id, req.userId]
         );
+        
+        if (requestResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Solicitação não encontrada' });
+        }
+        
+        const request = requestResult.rows[0];
+        
+        if (request.status !== 'pending') {
+            return res.status(400).json({ error: 'Solicitação já foi processada' });
+        }
+        
+        // Liberar créditos reservados
+        await pool.query(
+            'UPDATE users SET credits_reserved = credits_reserved - $1 WHERE id = $2',
+            [request.credits_requested, req.userId]
+        );
+        
+        // Marcar como cancelada
+        await pool.query(
+            'UPDATE leads_requests SET status = $1, cancelled_at = NOW() WHERE id = $2',
+            ['cancelled', id]
+        );
+        
+        console.log('🚫 [LEADS-REQUEST] Solicitação cancelada:', id);
+        
+        res.json({ success: true, message: 'Solicitação cancelada com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao cancelar solicitação:', error);
+        res.status(500).json({ error: 'Erro ao cancelar solicitação' });
+    }
+});
 
-        const stats = statsResult.rows[0];
+// ==================== ROTAS ADMIN - GERENCIAR SOLICITAÇÕES ====================
 
-        res.json({
-            totalRequests: parseInt(stats.total_requests),
-            totalCreditsRequested: parseInt(stats.total_credits_requested),
-            creditsBalance: parseInt(stats.credits_balance)
+// Listar todas as solicitações (admin)
+app.get('/api/admin/leads-requests', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { status } = req.query;
+        
+        let query = `
+            SELECT 
+                lr.*,
+                u.name as user_name,
+                u.email as user_email,
+                u.credits_balance
+            FROM leads_requests lr
+            JOIN users u ON lr.user_id = u.id
+        `;
+        
+        const params = [];
+        
+        if (status) {
+            query += ' WHERE lr.status = $1';
+            params.push(status);
+        }
+        
+        query += ' ORDER BY lr.created_at DESC';
+        
+        const result = await pool.query(query, params);
+        
+        res.json({ requests: result.rows });
+    } catch (error) {
+        console.error('❌ Erro ao buscar solicitações admin:', error);
+        res.status(500).json({ error: 'Erro ao buscar solicitações' });
+    }
+});
+
+// Confirmar entrega (admin)
+app.post('/api/admin/leads-requests/:id/confirm', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { admin_notes } = req.body;
+        
+        // Buscar solicitação
+        const requestResult = await pool.query(
+            'SELECT * FROM leads_requests WHERE id = $1',
+            [id]
+        );
+        
+        if (requestResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Solicitação não encontrada' });
+        }
+        
+        const request = requestResult.rows[0];
+        
+        if (request.status !== 'pending') {
+            return res.status(400).json({ error: 'Solicitação já foi processada' });
+        }
+        
+        // Debitar créditos do usuário
+        await pool.query(`
+            UPDATE users 
+            SET 
+                credits_balance = credits_balance - $1,
+                credits_reserved = credits_reserved - $1
+            WHERE id = $2
+        `, [request.credits_requested, request.user_id]);
+        
+        // Marcar como confirmada
+        await pool.query(`
+            UPDATE leads_requests 
+            SET 
+                status = $1, 
+                confirmed_at = NOW(),
+                admin_notes = $2
+            WHERE id = $3
+        `, ['confirmed', admin_notes, id]);
+        
+        console.log('✅ [LEADS-REQUEST-ADMIN] Entrega confirmada:', id);
+        console.log('💰 [LEADS-REQUEST-ADMIN] Créditos debitados:', request.credits_requested);
+        
+        res.json({ success: true, message: 'Entrega confirmada com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao confirmar entrega:', error);
+        res.status(500).json({ error: 'Erro ao confirmar entrega' });
+    }
+});
+
+// Cancelar solicitação (admin)
+app.post('/api/admin/leads-requests/:id/cancel', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { admin_notes } = req.body;
+        
+        // Buscar solicitação
+        const requestResult = await pool.query(
+            'SELECT * FROM leads_requests WHERE id = $1',
+            [id]
+        );
+        
+        if (requestResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Solicitação não encontrada' });
+        }
+        
+        const request = requestResult.rows[0];
+        
+        if (request.status !== 'pending') {
+            return res.status(400).json({ error: 'Solicitação já foi processada' });
+        }
+        
+        // Liberar créditos reservados
+        await pool.query(
+            'UPDATE users SET credits_reserved = credits_reserved - $1 WHERE id = $2',
+            [request.credits_requested, request.user_id]
+        );
+        
+        // Marcar como cancelada
+        await pool.query(`
+            UPDATE leads_requests 
+            SET 
+                status = $1, 
+                cancelled_at = NOW(),
+                admin_notes = $2
+            WHERE id = $3
+        `, ['cancelled', admin_notes, id]);
+        
+        console.log('🚫 [LEADS-REQUEST-ADMIN] Solicitação cancelada:', id);
+        
+        res.json({ success: true, message: 'Solicitação cancelada com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao cancelar solicitação (admin):', error);
+        res.status(500).json({ error: 'Erro ao cancelar solicitação' });
+    }
+});
+
+// Job para liberar créditos expirados (executar a cada hora)
+app.get('/api/cron/expire-requests', async (req, res) => {
+    try {
+        console.log('⏰ [CRON] Verificando solicitações expiradas...');
+        
+        // Buscar solicitações pendentes e expiradas
+        const expiredResult = await pool.query(`
+            SELECT * FROM leads_requests 
+            WHERE status = 'pending' 
+            AND expires_at < NOW()
+        `);
+        
+        const expired = expiredResult.rows;
+        
+        if (expired.length === 0) {
+            console.log('✅ [CRON] Nenhuma solicitação expirada');
+            return res.json({ success: true, expired_count: 0 });
+        }
+        
+        console.log(`⚠️ [CRON] ${expired.length} solicitações expiradas encontradas`);
+        
+        // Processar cada uma
+        for (const request of expired) {
+            // Liberar créditos
+            await pool.query(
+                'UPDATE users SET credits_reserved = credits_reserved - $1 WHERE id = $2',
+                [request.credits_requested, request.user_id]
+            );
+            
+            // Marcar como expirada
+            await pool.query(
+                'UPDATE leads_requests SET status = $1, cancelled_at = NOW() WHERE id = $2',
+                ['expired', request.id]
+            );
+            
+            console.log(`🔓 [CRON] Créditos liberados: ${request.credits_requested} (Request ID: ${request.id})`);
+        }
+        
+        console.log(`✅ [CRON] ${expired.length} solicitações expiradas processadas`);
+        
+        res.json({ 
+            success: true, 
+            expired_count: expired.length,
+            requests: expired.map(r => ({ id: r.id, credits: r.credits_requested }))
         });
     } catch (error) {
-        console.error('❌ Erro ao buscar estatísticas:', error);
-        res.status(500).json({ error: 'Erro ao buscar estatísticas' });
+        console.error('❌ [CRON] Erro ao processar expirações:', error);
+        res.status(500).json({ error: 'Erro ao processar expirações' });
     }
 });
 
 // ==================== ROTAS ADMIN ====================
 
+// Dashboard admin
 app.get('/api/admin/dashboard', authMiddleware, adminMiddleware, async (req, res) => {
     try {
+        // Total de usuários
         const usersCount = await pool.query('SELECT COUNT(*) FROM users');
-        const transactionsCount = await pool.query(
-            "SELECT COUNT(*) FROM credit_transactions WHERE type = 'credit'"
-        );
-        const creditsCount = await pool.query(
-            "SELECT COALESCE(SUM(amount), 0) as total FROM credit_transactions WHERE type = 'credit'"
-        );
-        const revenue = await pool.query(
-            "SELECT COALESCE(SUM(amount * 0.14), 0) as total FROM credit_transactions WHERE type = 'credit'"
-        );
-
-        const salesByDay = await pool.query(`
+        
+        // Total de transações
+        const transactionsCount = await pool.query('SELECT COUNT(*) FROM credit_transactions WHERE type = $1', ['credit']);
+        
+        // Total de créditos vendidos
+        const creditsResult = await pool.query('SELECT SUM(amount) FROM credit_transactions WHERE type = $1', ['credit']);
+        
+        // Total de vendas (14% do valor dos créditos)
+        const totalCredits = parseInt(creditsResult.rows[0].sum || 0);
+        const totalSales = (totalCredits * 0.14);
+        
+        // Vendas por dia nos últimos 30 dias
+        const salesByDayResult = await pool.query(`
             SELECT 
                 DATE(created_at) as date,
-                COALESCE(SUM(amount * 0.14), 0) as revenue,
-                COUNT(*) as transactions
+                SUM(amount) as credits
             FROM credit_transactions
-            WHERE type = 'credit' AND created_at > NOW() - INTERVAL '30 days'
+            WHERE type = 'credit'
+            AND created_at >= NOW() - INTERVAL '30 days'
             GROUP BY DATE(created_at)
             ORDER BY date DESC
         `);
 
+        const salesByDay = salesByDayResult.rows.map(row => ({
+            date: row.date,
+            revenue: (parseInt(row.credits) * 0.14)
+        }));
+
         res.json({
             totalUsers: parseInt(usersCount.rows[0].count),
             totalTransactions: parseInt(transactionsCount.rows[0].count),
-            totalCreditsSold: parseInt(creditsCount.rows[0].total || 0),
-            totalSales: parseFloat(revenue.rows[0].total || 0),
-            salesByDay: salesByDay.rows
+            totalCreditsSold: totalCredits,
+            totalSales: totalSales,
+            salesByDay: salesByDay
         });
     } catch (error) {
-        console.error('❌ Erro ao buscar dashboard admin:', error);
+        console.error('❌ Erro ao buscar dados do dashboard:', error);
         res.status(500).json({ error: 'Erro ao buscar dados do dashboard' });
     }
 });
 
+// Listar usuários (admin)
 app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
     try {
-        const { search = '' } = req.query;
+        const { search } = req.query;
         
         let query = 'SELECT id, name, email, phone, credits_balance, role, status, created_at FROM users';
-        let params = [];
+        const params = [];
         
         if (search) {
             query += ' WHERE name ILIKE $1 OR email ILIKE $1';
@@ -568,6 +1452,7 @@ app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) =>
     }
 });
 
+// Obter detalhes de um usuário (admin)
 app.get('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (req, res) => {
     try {
         const { userId } = req.params;
@@ -584,10 +1469,11 @@ app.get('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (req,
         res.json({ user: result.rows[0] });
     } catch (error) {
         console.error('❌ Erro ao buscar usuário:', error);
-        res.status(500).json({ error: 'Erro ao buscar detalhes do usuário' });
+        res.status(500).json({ error: 'Erro ao buscar usuário' });
     }
 });
 
+// Atualizar usuário (admin)
 app.put('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (req, res) => {
     try {
         const { userId } = req.params;
@@ -620,92 +1506,69 @@ app.put('/api/admin/users/:userId', authMiddleware, adminMiddleware, async (req,
         }
         
         values.push(userId);
+        const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING id, name, email, credits_balance, role, status`;
         
-        await pool.query(
-            `UPDATE users SET ${updates.join(', ')}, updated_at = NOW() WHERE id = $${paramCount}`,
-            values
-        );
+        const result = await pool.query(query, values);
         
-        res.json({ message: 'Usuário atualizado com sucesso' });
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+        
+        console.log('✅ Usuário atualizado:', userId);
+        res.json({ user: result.rows[0] });
     } catch (error) {
         console.error('❌ Erro ao atualizar usuário:', error);
         res.status(500).json({ error: 'Erro ao atualizar usuário' });
     }
 });
 
+// Listar transações (admin)
 app.get('/api/admin/transactions', authMiddleware, adminMiddleware, async (req, res) => {
     try {
-        const { status = '' } = req.query;
+        const { status } = req.query;
         
         let query = `
-            SELECT ct.id, ct.type, ct.amount, ct.description, ct.created_at,
-                   u.name as user_name, u.email as user_email
-            FROM credit_transactions ct
-            JOIN users u ON ct.user_id = u.id
+            SELECT 
+                t.id,
+                t.user_id,
+                t.package_id,
+                t.amount,
+                t.status,
+                t.payment_method,
+                t.credits,
+                t.created_at,
+                u.name as user_name,
+                u.email as user_email
+            FROM transactions t
+            JOIN users u ON t.user_id = u.id
         `;
         
         const params = [];
         
         if (status) {
-            query += ' WHERE ct.type = $1';
+            query += ' WHERE t.status = $1';
             params.push(status);
         }
         
-        query += ' ORDER BY ct.created_at DESC LIMIT 100';
+        query += ' ORDER BY t.created_at DESC LIMIT 100';
         
         const result = await pool.query(query, params);
+        
         res.json({ transactions: result.rows });
     } catch (error) {
-        console.error('❌ Erro ao listar transações:', error);
-        res.status(500).json({ error: 'Erro ao listar transações' });
+        console.error('❌ Erro ao buscar transações:', error);
+        res.status(500).json({ error: 'Erro ao buscar transações' });
     }
 });
 
+// Exportar transações (placeholder)
 app.get('/api/admin/export/transactions', authMiddleware, adminMiddleware, async (req, res) => {
-    res.json({ message: 'Exportação em desenvolvimento' });
+    res.json({ message: 'Funcionalidade de exportação em desenvolvimento' });
 });
 
+// Exportar usuários (placeholder)
 app.get('/api/admin/export/users', authMiddleware, adminMiddleware, async (req, res) => {
-    res.json({ message: 'Exportação em desenvolvimento' });
-});
-
-// ==================== ROTA DE EMERGÊNCIA ====================
-
-app.post('/api/emergency/reset-password', async (req, res) => {
-    try {
-        const { email, newPassword, secretKey } = req.body;
-        
-        if (secretKey !== 'LEADS2026EMERGENCY') {
-            return res.status(403).json({ error: 'Chave secreta inválida' });
-        }
-        
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-        
-        const result = await pool.query(
-            'UPDATE users SET password = $1 WHERE email = $2 RETURNING id, email',
-            [hashedPassword, email.toLowerCase()]
-        );
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Usuário não encontrado' });
-        }
-        
-        console.log('🔧 Senha resetada via rota de emergência:', email);
-        
-        res.json({ 
-            message: 'Senha resetada com sucesso',
-            user: result.rows[0]
-        });
-    } catch (error) {
-        console.error('❌ Erro ao resetar senha:', error);
-        res.status(500).json({ error: 'Erro ao resetar senha' });
-    }
-});
-
-// ==================== HEALTH CHECK ====================
-
-app.get('/health', (req, res) => {
-    res.json({ status: 'OK', timestamp: new Date().toISOString() });
+    res.json({ message: 'Funcionalidade de exportação em desenvolvimento' });
 });
 
 // ==================== INICIAR SERVIDOR ====================
@@ -720,5 +1583,6 @@ app.listen(PORT, () => {
     console.log('╠═══════════════════════════════════════════════════════╣');
     console.log(`║     💳 Mercado Pago: ${process.env.MERCADOPAGO_ACCESS_TOKEN ? '✅ Configurado' : '❌ Não configurado'}           ║`);
     console.log(`║     📧 Resend API: ${process.env.RESEND_API_KEY ? '✅ Configurado' : '❌ Não configurado'}             ║`);
+    console.log(`║     ✅ Rotas Admin: ATIVAS                           ║`);
     console.log('╚═══════════════════════════════════════════════════════╝\n');
 });
