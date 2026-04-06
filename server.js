@@ -538,7 +538,25 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // Perfil do usuário
-app.get('/api/auth/profile', authMiddleware, async (req, res) => { // Atualizar perfil do usuário
+app.get('/api/auth/profile', authMiddleware, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT id, name, email, credits_balance, role, status, created_at FROM users WHERE id = $1',
+            [req.userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+
+        res.json({ user: result.rows[0] });
+    } catch (error) {
+        console.error('❌ Erro ao buscar perfil:', error);
+        res.status(500).json({ error: 'Erro ao buscar perfil' });
+    }
+});
+
+// Atualizar perfil do usuário
 app.put('/api/auth/profile', authMiddleware, async (req, res) => {
     try {
         const { name, phone } = req.body;
@@ -590,8 +608,7 @@ app.put('/api/auth/password', authMiddleware, async (req, res) => {
 
         const user = result.rows[0];
 
-        // Verificar senha atual (assumindo que você usa bcryptjs)
-        const bcrypt = require('bcryptjs');
+        // Verificar senha atual
         const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
         
         if (!isValidPassword) {
@@ -613,23 +630,6 @@ app.put('/api/auth/password', authMiddleware, async (req, res) => {
     } catch (error) {
         console.error('❌ Erro ao alterar senha:', error);
         res.status(500).json({ error: 'Erro ao alterar senha' });
-    }
-});
-
-    try {
-        const result = await pool.query(
-            'SELECT id, name, email, credits_balance, role, status, created_at FROM users WHERE id = $1',
-            [req.userId]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Usuário não encontrado' });
-        }
-
-        res.json({ user: result.rows[0] });
-    } catch (error) {
-        console.error('❌ Erro ao buscar perfil:', error);
-        res.status(500).json({ error: 'Erro ao buscar perfil' });
     }
 });
 
@@ -702,6 +702,155 @@ app.post('/api/auth/reset-password', async (req, res) => {
     } catch (error) {
         console.error('❌ Erro ao resetar senha:', error);
         res.status(500).json({ error: 'Erro ao resetar senha' });
+    }
+});
+
+// ==================== ROTAS DE HISTÓRICO DE DÉBITOS ====================
+
+// Buscar histórico de débitos do usuário
+app.get('/api/user/debit-history', authMiddleware, async (req, res) => {
+    try {
+        console.log('📊 Buscando histórico de débitos para usuário:', req.userId);
+
+        const result = await pool.query(`
+            SELECT 
+                id,
+                amount,
+                description,
+                created_at
+            FROM credit_transactions
+            WHERE user_id = $1 AND type = 'debit'
+            ORDER BY created_at DESC
+            LIMIT 50
+        `, [req.userId]);
+
+        // Calcular total debitado
+        const totalResult = await pool.query(`
+            SELECT COALESCE(SUM(amount), 0) as total
+            FROM credit_transactions
+            WHERE user_id = $1 AND type = 'debit'
+        `, [req.userId]);
+
+        const totalDebited = parseInt(totalResult.rows[0].total);
+
+        console.log(`✅ Histórico recuperado: ${result.rows.length} débitos, total: ${totalDebited}`);
+
+        res.json({
+            success: true,
+            debits: result.rows,
+            total_debited: totalDebited
+        });
+    } catch (error) {
+        console.error('❌ Erro ao buscar débitos:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Erro ao buscar histórico de débitos' 
+        });
+    }
+});
+
+// ==================== 🆕 ROTAS DE HISTÓRICO DE BUSCAS (NOVO) ====================
+
+// Salvar busca no banco de dados
+app.post('/api/leads/save-search', authMiddleware, async (req, res) => {
+    try {
+        const { filters, leads_found } = req.body;
+
+        console.log('💾 Salvando busca para usuário:', req.userId);
+
+        if (!filters) {
+            return res.status(400).json({ error: 'Filtros são obrigatórios' });
+        }
+
+        const result = await pool.query(`
+            INSERT INTO search_history (user_id, filters, leads_found)
+            VALUES ($1, $2, $3)
+            RETURNING id, created_at
+        `, [req.userId, JSON.stringify(filters), leads_found || 0]);
+
+        const search = result.rows[0];
+
+        console.log('✅ Busca salva com sucesso:', search.id);
+
+        res.json({
+            success: true,
+            search_id: search.id,
+            created_at: search.created_at
+        });
+    } catch (error) {
+        console.error('❌ Erro ao salvar busca:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Erro ao salvar busca' 
+        });
+    }
+});
+
+// Listar histórico de buscas do usuário
+app.get('/api/leads/search-history', authMiddleware, async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 20;
+
+        console.log(`📚 Buscando histórico (últimas ${limit} buscas) para usuário:`, req.userId);
+
+        const result = await pool.query(`
+            SELECT 
+                id,
+                filters,
+                leads_found,
+                created_at
+            FROM search_history
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+        `, [req.userId, limit]);
+
+        console.log(`✅ ${result.rows.length} buscas encontradas`);
+
+        res.json({
+            success: true,
+            searches: result.rows
+        });
+    } catch (error) {
+        console.error('❌ Erro ao buscar histórico:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Erro ao buscar histórico de buscas' 
+        });
+    }
+});
+
+// Obter estatísticas de buscas do usuário
+app.get('/api/leads/stats', authMiddleware, async (req, res) => {
+    try {
+        console.log('📊 Buscando estatísticas para usuário:', req.userId);
+
+        const result = await pool.query(`
+            SELECT 
+                COUNT(*) as total_searches,
+                COALESCE(SUM(leads_found), 0) as total_leads
+            FROM search_history
+            WHERE user_id = $1
+        `, [req.userId]);
+
+        const stats = {
+            buscas: parseInt(result.rows[0].total_searches),
+            totalLeads: parseInt(result.rows[0].total_leads)
+        };
+
+        console.log('✅ Estatísticas:', stats);
+
+        res.json({
+            success: true,
+            stats: stats
+        });
+    } catch (error) {
+        console.error('❌ Erro ao buscar estatísticas:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Erro ao buscar estatísticas',
+            stats: { buscas: 0, totalLeads: 0 } // Fallback
+        });
     }
 });
 
@@ -1661,5 +1810,6 @@ app.listen(PORT, () => {
     console.log(`║     💳 Mercado Pago: ${process.env.MERCADOPAGO_ACCESS_TOKEN ? '✅ Configurado' : '❌ Não configurado'}           ║`);
     console.log(`║     📧 Resend API: ${process.env.RESEND_API_KEY ? '✅ Configurado' : '❌ Não configurado'}             ║`);
     console.log(`║     ✅ Rotas Admin: ATIVAS                           ║`);
+    console.log(`║     📚 Histórico de Buscas: ATIVO (banco de dados)  ║`);
     console.log('╚═══════════════════════════════════════════════════════╝\n');
 });
