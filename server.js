@@ -107,14 +107,28 @@ function calculateDiscount(price, coupon) {
 
 app.use(helmet());
 app.use(morgan('dev'));
+// ==================== CORS ====================
+const allowedOrigins = [
+    'https://leadsparatodos.com',              // ← NOVO
+    'https://www.leadsparatodos.com',          // ← NOVO
+    'https://jkvzqvlk.gensparkspace.com',
+    'http://localhost:3000',
+    'http://localhost:5500'
+];
+
 app.use(cors({
-    origin: [
-        'https://jkvzqvlk.gensparkspace.com',
-        'http://localhost:3000',
-        'http://localhost:5500'
-    ],
+    origin: function (origin, callback) {
+        if (!origin) return callback(null, true);
+        
+        if (allowedOrigins.indexOf(origin) === -1) {
+            const msg = 'A política de CORS deste site não permite acesso da origem especificada.';
+            return callback(new Error(msg), false);
+        }
+        return callback(null, true);
+    },
     credentials: true
 }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
