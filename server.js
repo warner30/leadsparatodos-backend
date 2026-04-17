@@ -669,7 +669,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
             [resetToken, resetTokenExpiry, user.id]
         );
 
-        const resetUrl = `https://jkvzqvlk.gensparkspace.com/reset-password.html?token=${resetToken}`;
+        const resetUrl = `https://leadsparatodos.com/reset-password.html?token=${resetToken}`;
 
         await sendEmail(
             email,
