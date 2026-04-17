@@ -109,8 +109,8 @@ app.use(helmet());
 app.use(morgan('dev'));
 // ==================== CORS ====================
 const allowedOrigins = [
-    'https://leadsparatodos.com',              // ← NOVO
-    'https://www.leadsparatodos.com',          // ← NOVO
+    'https://leadsparatodos.com',              
+    'https://www.leadsparatodos.com',          
     'https://jkvzqvlk.gensparkspace.com',
     'http://localhost:3000',
     'http://localhost:5500'
@@ -126,11 +126,14 @@ app.use(cors({
         }
         return callback(null, true);
     },
-    credentials: true
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],        // ← ADICIONAR ESTA LINHA
+    allowedHeaders: ['Content-Type', 'Authorization']                      // ← ADICIONAR ESTA LINHA
 }));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
 
 // Middleware de autenticação
 const authMiddleware = async (req, res, next) => {
