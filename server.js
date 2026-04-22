@@ -445,7 +445,7 @@ app.get('/api/admin/check-credits/:email', async (req, res) => {
 // Registro
 app.post('/api/auth/register', async (req, res) => {
     try {
-        const { name, email, password } = req.body;
+        const { name, email, password, phone } = req.body;
 
         console.log('📝 Tentativa de registro:', { name, email });
 
