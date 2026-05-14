@@ -1804,14 +1804,89 @@ app.get('/api/admin/transactions', authMiddleware, adminMiddleware, async (req, 
     }
 });
 
-// Exportar transações (placeholder)
+// Exportar transações em CSV
 app.get('/api/admin/export/transactions', authMiddleware, adminMiddleware, async (req, res) => {
-    res.json({ message: 'Funcionalidade de exportação em desenvolvimento' });
+    try {
+        const { status } = req.query;
+        
+        let query = `
+            SELECT 
+                ct.id,
+                u.name as user_name,
+                u.email as user_email,
+                u.phone as user_phone,
+                ct.type,
+                ct.amount as credits,
+                ct.description,
+                ct.created_at
+            FROM credit_transactions ct
+            JOIN users u ON ct.user_id = u.id
+        `;
+        
+        const params = [];
+        if (status) {
+            query += ' WHERE ct.type = $1';
+            params.push(status);
+        }
+        
+        query += ' ORDER BY ct.created_at DESC';
+        
+        const result = await pool.query(query, params);
+        
+        // Criar CSV
+        let csv = 'ID,Usuário,Email,WhatsApp,Tipo,Créditos,Descrição,Data\n';
+        
+        result.rows.forEach(row => {
+            const date = new Date(row.created_at).toLocaleDateString('pt-BR');
+            const phone = row.user_phone || '-';
+            const description = (row.description || '').replace(/,/g, ';');
+            
+            csv += `${row.id},"${row.user_name}","${row.user_email}","${phone}",${row.type},${row.credits},"${description}",${date}\n`;
+        });
+        
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="transacoes-${Date.now()}.csv"`);
+        res.send('\ufeff' + csv); // BOM para UTF-8
+    } catch (error) {
+        console.error('❌ Erro ao exportar transações:', error);
+        res.status(500).json({ error: 'Erro ao exportar transações' });
+    }
 });
 
-// Exportar usuários (placeholder)
+// Exportar usuários em CSV
 app.get('/api/admin/export/users', authMiddleware, adminMiddleware, async (req, res) => {
-    res.json({ message: 'Funcionalidade de exportação em desenvolvimento' });
+    try {
+        const result = await pool.query(`
+            SELECT 
+                id,
+                name,
+                email,
+                phone,
+                credits_balance,
+                role,
+                status,
+                created_at
+            FROM users
+            ORDER BY created_at DESC
+        `);
+        
+        // Criar CSV com todas as colunas
+        let csv = 'ID,Nome,Email,WhatsApp,Créditos,Tipo,Status,Data Cadastro\n';
+        
+        result.rows.forEach(user => {
+            const date = new Date(user.created_at).toLocaleDateString('pt-BR');
+            const phone = user.phone || '-';
+            
+            csv += `${user.id},"${user.name}","${user.email}","${phone}",${user.credits_balance},${user.role},${user.status},${date}\n`;
+        });
+        
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="usuarios-${Date.now()}.csv"`);
+        res.send('\ufeff' + csv); // BOM para UTF-8
+    } catch (error) {
+        console.error('❌ Erro ao exportar usuários:', error);
+        res.status(500).json({ error: 'Erro ao exportar usuários' });
+    }
 });
 
 // ==================== INICIAR SERVIDOR ====================
