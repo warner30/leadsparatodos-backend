@@ -127,8 +127,8 @@ app.use(cors({
         return callback(null, true);
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],        // ← ADICIONAR ESTA LINHA
-    allowedHeaders: ['Content-Type', 'Authorization']                      // ← ADICIONAR ESTA LINHA
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
@@ -445,9 +445,9 @@ app.get('/api/admin/check-credits/:email', async (req, res) => {
 // Registro
 app.post('/api/auth/register', async (req, res) => {
     try {
-        const { name, email, password } = req.body;
+        const { name, email, password, phone } = req.body;
 
-        console.log('📝 Tentativa de registro:', { name, email });
+        console.log('📝 Tentativa de registro:', { name, email, phone });
 
         if (!name || !email || !password) {
             return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
@@ -464,8 +464,8 @@ app.post('/api/auth/register', async (req, res) => {
 
         // Inserir usuário
         const result = await pool.query(
-            'INSERT INTO users (name, email, password_hash, credits_balance, role, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, credits_balance, role',
-            [name, email, password_hash, 0, 'user', 'active']
+            'INSERT INTO users (name, email, phone, password_hash, credits_balance, role, status) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, email, phone, credits_balance, role',
+            [name, email, phone, password_hash, 0, 'user', 'active']
         );
 
         const user = result.rows[0];
@@ -863,10 +863,10 @@ app.get('/api/leads/stats', authMiddleware, async (req, res) => {
         });
     } catch (error) {
         console.error('❌ Erro ao buscar estatísticas:', error);
-        res.status(500).json({ 
+        res.json({ 
             success: false,
             error: 'Erro ao buscar estatísticas',
-            stats: { buscas: 0, totalLeads: 0 } // Fallback
+            stats: { buscas: 0, totalLeads: 0 }
         });
     }
 });
